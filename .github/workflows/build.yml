@@ -2,8 +2,20 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:   # lets you trigger it manually from GitHub too
+    branches: [main]   # auto-build on every push (artifact only)
+  workflow_dispatch:   # manual trigger with version + description
+    inputs:
+      version:
+        description: 'Version number (e.g. 1.1.0)'
+        required: true
+        default: '1.0.0'
+      description:
+        description: 'What changed in this version'
+        required: false
+        default: 'No description provided'
+
+permissions:
+  contents: write   # needed to create releases
 
 jobs:
   build:
@@ -29,9 +41,22 @@ jobs:
           --name "MonitorManager"
           monitor_manager.py
 
-      - name: Upload EXE as artifact
+      # On every push → upload as a named artifact (short commit SHA in name)
+      - name: Upload artifact (auto build)
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
-          name: MonitorManager-Windows
+          name: MonitorManager-${{ github.sha }}
           path: dist/MonitorManager.exe
           retention-days: 30
+
+      # On manual trigger → create a proper GitHub Release
+      - name: Create GitHub Release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" `
+            --title "Monitor Manager v${{ inputs.version }}" `
+            --notes "${{ inputs.description }}" `
+            dist/MonitorManager.exe#MonitorManager-v${{ inputs.version }}.exe
