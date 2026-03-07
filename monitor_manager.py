@@ -11,10 +11,11 @@ import winreg
 import subprocess
 
 # ── Windows API constants ──────────────────────────────────────────────────────
-MONITORINFOF_PRIMARY = 0x00000001
-WM_SYSCOMMAND        = 0x0112
-SC_MONITORPOWER      = 0xF170
-HWND_BROADCAST       = 0xFFFF
+MONITORINFOF_PRIMARY  = 0x00000001
+WM_SYSCOMMAND         = 0x0112
+SC_MONITORPOWER       = 0xF170
+HWND_BROADCAST        = 0xFFFF
+ENUM_CURRENT_SETTINGS = 0xFFFFFFFF
 
 DM_POSITION    = 0x00000020
 DM_PELSWIDTH   = 0x00080000
@@ -87,14 +88,20 @@ def get_monitors():
         info.cbSize = ctypes.sizeof(MONITORINFOEX)
         ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(info))
         r = info.rcMonitor
+
+        # Use EnumDisplaySettingsW for physical pixel resolution (unaffected by DPI scaling)
+        dm = DEVMODE()
+        dm.dmSize = ctypes.sizeof(DEVMODE)
+        ctypes.windll.user32.EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, ctypes.byref(dm))
+
         counter[0] += 1
         monitors.append({
             "index":   counter[0],
             "device":  info.szDevice,
             "left":    r.left,
             "top":     r.top,
-            "width":   r.right  - r.left,
-            "height":  r.bottom - r.top,
+            "width":   dm.dmPelsWidth,
+            "height":  dm.dmPelsHeight,
             "primary": bool(info.dwFlags & MONITORINFOF_PRIMARY),
         })
         return True
