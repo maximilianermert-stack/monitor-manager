@@ -1,6 +1,7 @@
 """
 Monitor Manager
 Run on Windows with Python 3.x — no extra dependencies needed.
+Requires administrator privileges for hardware temperature reading.
 """
 
 import tkinter as tk
@@ -9,6 +10,8 @@ import ctypes
 import ctypes.wintypes
 import winreg
 import subprocess
+import os
+import sys
 
 # ── Windows API constants ──────────────────────────────────────────────────────
 MONITORINFOF_PRIMARY        = 0x00000001
@@ -24,7 +27,7 @@ CDS_UPDATEREGISTRY          = 0x00000001
 CDS_NORESET                 = 0x10000000
 DISP_CHANGE_SUCCESSFUL      = 0
 
-DISPLAY_DEVICE_ACTIVE       = 0x00000001   # attached to desktop
+DISPLAY_DEVICE_ACTIVE       = 0x00000001
 
 # ── Structures ─────────────────────────────────────────────────────────────────
 class RECT(ctypes.Structure):
@@ -62,12 +65,10 @@ class DEVMODE(ctypes.Structure):
         ("dmSize",               ctypes.c_ushort),
         ("dmDriverExtra",        ctypes.c_ushort),
         ("dmFields",             ctypes.c_ulong),
-        # Union (display layout)
         ("dmPositionX",          ctypes.c_long),
         ("dmPositionY",          ctypes.c_long),
         ("dmDisplayOrientation", ctypes.c_ulong),
         ("dmDisplayFixedOutput", ctypes.c_ulong),
-        # Shared fields
         ("dmColor",              ctypes.c_short),
         ("dmDuplex",             ctypes.c_short),
         ("dmYResolution",        ctypes.c_short),
@@ -82,6 +83,71 @@ class DEVMODE(ctypes.Structure):
         ("dmDisplayFrequency",   ctypes.c_ulong),
     ]
 
+# ── LibreHardwareMonitor (temperature) ────────────────────────────────────────
+_lhm_computer = None
+
+def _lhm_dll_path():
+    base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "LibreHardwareMonitorLib.dll")
+
+def init_lhm() -> bool:
+    global _lhm_computer
+    try:
+        import clr  # pythonnet
+        clr.AddReference(_lhm_dll_path())
+        from LibreHardwareMonitor.Hardware import Computer
+        computer = Computer()
+        computer.IsCpuEnabled = True
+        computer.IsGpuEnabled = True
+        computer.Open()
+        _lhm_computer = computer
+        return True
+    except Exception:
+        return False
+
+def get_temperatures() -> tuple:
+    """Returns (cpu_temp, gpu_temp, gpu_name) — values are float °C or None."""
+    if _lhm_computer is None:
+        return None, None, None
+    try:
+        from LibreHardwareMonitor.Hardware import HardwareType, SensorType
+        cpu_temp = None
+        gpu_temp = None
+        gpu_name = None
+
+        for hw in _lhm_computer.Hardware:
+            hw.Update()
+            hw_type = hw.HardwareType
+            is_cpu  = hw_type == HardwareType.Cpu
+            is_gpu  = hw_type in (
+                HardwareType.GpuNvidia,
+                HardwareType.GpuAmd,
+                HardwareType.GpuIntel,
+            )
+
+            for sensor in hw.Sensors:
+                if sensor.SensorType != SensorType.Temperature:
+                    continue
+                if sensor.Value is None:
+                    continue
+                val  = float(sensor.Value)
+                name = str(sensor.Name)
+
+                if is_cpu:
+                    # Prefer package/average temp over individual core temps
+                    if "Package" in name or "Average" in name:
+                        cpu_temp = val
+                    elif cpu_temp is None:
+                        cpu_temp = val
+
+                elif is_gpu and gpu_temp is None:
+                    gpu_temp = val
+                    gpu_name = str(hw.Name)
+
+        return cpu_temp, gpu_temp, gpu_name
+    except Exception:
+        return None, None, None
+
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
     ctypes.c_bool,
@@ -92,9 +158,8 @@ _MonitorEnumProc = ctypes.WINFUNCTYPE(
 )
 
 def get_active_monitors():
-    """Return active monitors with resolution and position info."""
     monitors = []
-    counter = [0]
+    counter  = [0]
 
     def _cb(hMonitor, hdc, lprc, _):
         info = MONITORINFOEX()
@@ -115,7 +180,6 @@ def get_active_monitors():
             "width":   dm.dmPelsWidth,
             "height":  dm.dmPelsHeight,
             "primary": bool(info.dwFlags & MONITORINFOF_PRIMARY),
-            "active":  True,
         })
         return True
 
@@ -124,35 +188,27 @@ def get_active_monitors():
     return monitors
 
 
-def get_disabled_devices(active_devices: set) -> list:
-    """Return display devices that exist but are not active (i.e. disabled)."""
+def get_disabled_devices(active_names: set) -> list:
     disabled = []
     dd = DISPLAY_DEVICE()
     dd.cb = ctypes.sizeof(DISPLAY_DEVICE)
     i = 0
     while ctypes.windll.user32.EnumDisplayDevicesW(None, i, ctypes.byref(dd), 0):
         is_active = bool(dd.StateFlags & DISPLAY_DEVICE_ACTIVE)
-        device_name = dd.DeviceName
-
-        if not is_active and device_name not in active_devices:
-            # Only include if the device has at least one valid display mode
-            # (filters out phantom adapter outputs with no monitor attached)
+        device    = dd.DeviceName
+        if not is_active and device not in active_names:
             dm = DEVMODE()
             dm.dmSize = ctypes.sizeof(DEVMODE)
-            has_modes = ctypes.windll.user32.EnumDisplaySettingsW(device_name, 0, ctypes.byref(dm))
-            if has_modes:
+            if ctypes.windll.user32.EnumDisplaySettingsW(device, 0, ctypes.byref(dm)):
                 disabled.append({
-                    "device":      device_name,
+                    "device":      device,
                     "description": dd.DeviceString,
-                    "active":      False,
                 })
         i += 1
     return disabled
 
-
-# ── Actions ─────────────────────────────────────────────────────────────────────
+# ── Display actions ────────────────────────────────────────────────────────────
 def turn_off_all():
-    """Power-off signal to all monitors — wake on any input."""
     ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
 
 
@@ -172,48 +228,41 @@ def disable_monitor(device: str, primary: bool) -> bool:
     dm.dmPelsHeight = 0
 
     result = ctypes.windll.user32.ChangeDisplaySettingsExW(
-        device, ctypes.byref(dm), None,
-        CDS_UPDATEREGISTRY | CDS_NORESET, None
+        device, ctypes.byref(dm), None, CDS_UPDATEREGISTRY | CDS_NORESET, None
     )
     ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
     return result == DISP_CHANGE_SUCCESSFUL
 
 
 def enable_monitor(device: str, active_monitors: list) -> bool:
-    """Re-enable a disabled monitor at the highest supported resolution."""
-    # Find highest supported resolution for this device
-    best_w, best_h, best_freq = 1920, 1080, 60  # safe fallback
-    dm_query = DEVMODE()
-    dm_query.dmSize = ctypes.sizeof(DEVMODE)
+    best_w, best_h = 1920, 1080
+    dm_q = DEVMODE()
+    dm_q.dmSize = ctypes.sizeof(DEVMODE)
     i = 0
-    while ctypes.windll.user32.EnumDisplaySettingsW(device, i, ctypes.byref(dm_query)):
-        if dm_query.dmPelsWidth * dm_query.dmPelsHeight > best_w * best_h:
-            best_w  = dm_query.dmPelsWidth
-            best_h  = dm_query.dmPelsHeight
-            best_freq = dm_query.dmDisplayFrequency
+    while ctypes.windll.user32.EnumDisplaySettingsW(device, i, ctypes.byref(dm_q)):
+        if dm_q.dmPelsWidth * dm_q.dmPelsHeight > best_w * best_h:
+            best_w = dm_q.dmPelsWidth
+            best_h = dm_q.dmPelsHeight
         i += 1
 
-    # Place the monitor to the right of the rightmost active monitor
-    rightmost_x = max((m["left"] + m["width"] for m in active_monitors), default=0)
+    rightmost = max((m["left"] + m["width"] for m in active_monitors), default=0)
 
     dm = DEVMODE()
-    dm.dmSize         = ctypes.sizeof(DEVMODE)
-    dm.dmFields       = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT
-    dm.dmPelsWidth    = best_w
-    dm.dmPelsHeight   = best_h
-    dm.dmPositionX    = rightmost_x
-    dm.dmPositionY    = 0
+    dm.dmSize       = ctypes.sizeof(DEVMODE)
+    dm.dmFields     = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT
+    dm.dmPelsWidth  = best_w
+    dm.dmPelsHeight = best_h
+    dm.dmPositionX  = rightmost
+    dm.dmPositionY  = 0
 
     result = ctypes.windll.user32.ChangeDisplaySettingsExW(
-        device, ctypes.byref(dm), None,
-        CDS_UPDATEREGISTRY | CDS_NORESET, None
+        device, ctypes.byref(dm), None, CDS_UPDATEREGISTRY | CDS_NORESET, None
     )
     ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
     return result == DISP_CHANGE_SUCCESSFUL
 
 
 def start_screensaver():
-    """Launch the screensaver currently configured in Windows Settings."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
             path, _ = winreg.QueryValueEx(key, "SCRNSAVE.EXE")
@@ -223,7 +272,6 @@ def start_screensaver():
             messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
     except (FileNotFoundError, OSError):
         messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
-
 
 # ── Theme ───────────────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
@@ -236,6 +284,7 @@ BLUE    = "#89b4fa"
 GREEN   = "#a6e3a1"
 YELLOW  = "#f9e2af"
 PURPLE  = "#cba6f7"
+PEACH   = "#fab387"
 
 
 def make_btn(parent, label, cmd, fg=TEXT):
@@ -247,7 +296,6 @@ def make_btn(parent, label, cmd, fg=TEXT):
         padx=12, pady=6, cursor="hand2", bd=0,
     )
 
-
 # ── Application ─────────────────────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
@@ -255,34 +303,74 @@ class App(tk.Tk):
         self.title("Monitor Manager")
         self.configure(bg=BG)
         self.resizable(False, False)
+        self._lhm_ok = init_lhm()
         self._build_ui()
         self.refresh()
+        self._tick_temps()
 
+    # ── Layout ──────────────────────────────────────────────────────────────────
     def _build_ui(self):
+        # Header
         hdr = tk.Frame(self, bg=BG, padx=16, pady=14)
         hdr.pack(fill="x")
         tk.Label(hdr, text="Monitor Manager",
                  font=("Segoe UI", 14, "bold"), bg=BG, fg=TEXT).pack(side="left")
 
-        self.list_frame = tk.Frame(self, bg=BG, padx=16)
-        self.list_frame.pack(fill="both")
+        # Temperature bar
+        temp_bar = tk.Frame(self, bg=SURFACE, padx=16, pady=10)
+        temp_bar.pack(fill="x", padx=16)
 
+        tk.Label(temp_bar, text="CPU", font=("Segoe UI", 9, "bold"),
+                 bg=SURFACE, fg=SUBTEXT).pack(side="left")
+        self._cpu_label = tk.Label(temp_bar, text="—",
+                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=PEACH)
+        self._cpu_label.pack(side="left", padx=(6, 24))
+
+        tk.Label(temp_bar, text="GPU", font=("Segoe UI", 9, "bold"),
+                 bg=SURFACE, fg=SUBTEXT).pack(side="left")
+        self._gpu_label = tk.Label(temp_bar, text="—",
+                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=BLUE)
+        self._gpu_label.pack(side="left", padx=(6, 0))
+
+        self._gpu_name_label = tk.Label(temp_bar, text="",
+                                        font=("Segoe UI", 8), bg=SURFACE, fg=SUBTEXT)
+        self._gpu_name_label.pack(side="left", padx=(8, 0))
+
+        if not self._lhm_ok:
+            tk.Label(temp_bar, text="(sensor init failed)",
+                     font=("Segoe UI", 8), bg=SURFACE, fg=RED).pack(side="right")
+
+        # Monitor list
+        self.list_frame = tk.Frame(self, bg=BG, padx=16)
+        self.list_frame.pack(fill="both", pady=(12, 0))
+
+        # Divider
         tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x", padx=16, pady=(8, 0))
 
+        # Bottom bar
         bar = tk.Frame(self, bg=BG, padx=16, pady=14)
         bar.pack(fill="x")
-
         make_btn(bar, "Turn Off All",     turn_off_all,      RED  ).pack(side="left", padx=(0, 8))
         make_btn(bar, "Screensaver Mode", start_screensaver, BLUE ).pack(side="left")
         make_btn(bar, "↻  Refresh",       self.refresh,      GREEN).pack(side="right")
 
+    # ── Temperature polling ──────────────────────────────────────────────────────
+    def _tick_temps(self):
+        cpu, gpu, gpu_name = get_temperatures()
+
+        self._cpu_label.config(text=f"{cpu:.0f} °C" if cpu is not None else "N/A")
+        self._gpu_label.config(text=f"{gpu:.0f} °C" if gpu is not None else "N/A")
+        self._gpu_name_label.config(text=gpu_name or "")
+
+        self.after(2000, self._tick_temps)
+
+    # ── Monitor cards ────────────────────────────────────────────────────────────
     def refresh(self):
         for w in self.list_frame.winfo_children():
             w.destroy()
 
         active   = get_active_monitors()
-        active_names = {m["device"] for m in active}
-        disabled = get_disabled_devices(active_names)
+        disabled = get_disabled_devices({m["device"] for m in active})
 
         if not active and not disabled:
             tk.Label(self.list_frame, text="No monitors detected.",
@@ -291,11 +379,9 @@ class App(tk.Tk):
 
         for mon in active:
             self._active_card(mon)
-
         for dev in disabled:
             self._disabled_card(dev, active)
 
-    # ── Active monitor card ──────────────────────────────────────────────────────
     def _active_card(self, mon: dict):
         card = tk.Frame(self.list_frame, bg=SURFACE, padx=14, pady=10)
         card.pack(fill="x", pady=(0, 8))
@@ -323,7 +409,6 @@ class App(tk.Tk):
         tk.Label(card, text=info,
                  font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(anchor="w", pady=(5, 0))
 
-    # ── Disabled monitor card ────────────────────────────────────────────────────
     def _disabled_card(self, dev: dict, active_monitors: list):
         card = tk.Frame(self.list_frame, bg=SURFACE, padx=14, pady=10)
         card.pack(fill="x", pady=(0, 8))
@@ -333,7 +418,6 @@ class App(tk.Tk):
 
         tk.Label(top, text=dev["device"],
                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-
         tk.Label(top, text="  ✕ Disabled",
                  font=("Segoe UI", 9), bg=SURFACE, fg=RED).pack(side="left")
 

@@ -2,8 +2,8 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [main]   # auto-build on every push (artifact only)
-  workflow_dispatch:   # manual trigger with version + description
+    branches: [main]
+  workflow_dispatch:
     inputs:
       version:
         description: 'Version number (e.g. 1.1.0)'
@@ -15,7 +15,7 @@ on:
         default: 'No description provided'
 
 permissions:
-  contents: write   # needed to create releases
+  contents: write
 
 jobs:
   build:
@@ -30,18 +30,27 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install dependencies
+        run: pip install pyinstaller pythonnet
+
+      - name: Download LibreHardwareMonitor DLL
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*net472*" }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "lhm.zip"
+          Expand-Archive -Path "lhm.zip" -DestinationPath "lhm_files"
+          Copy-Item "lhm_files\LibreHardwareMonitorLib.dll" "."
 
       - name: Build standalone EXE
-        run: >
-          pyinstaller
-          --onefile
-          --windowed
-          --name "MonitorManager"
-          monitor_manager.py
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name "MonitorManager" `
+            --uac-admin `
+            --add-binary "LibreHardwareMonitorLib.dll;." `
+            monitor_manager.py
 
-      # On every push → upload as a named artifact (short commit SHA in name)
       - name: Upload artifact (auto build)
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
@@ -50,7 +59,6 @@ jobs:
           path: dist/MonitorManager.exe
           retention-days: 30
 
-      # On manual trigger → create a proper GitHub Release
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch'
         env:
