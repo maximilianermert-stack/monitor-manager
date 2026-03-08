@@ -38,6 +38,9 @@ jobs:
           cd tempreader
           dotnet publish -c Release --framework net472 -o ../tempreader_out
 
+      - name: Generate app icon
+        run: python create_icon.py
+
       - name: Build standalone EXE
         run: >
           pyinstaller
@@ -45,6 +48,7 @@ jobs:
           --windowed
           --name "MonitorManager"
           --uac-admin
+          --icon icon.ico
           --add-data "tempreader_out;tempreader"
           monitor_manager.py
 
