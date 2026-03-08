@@ -85,16 +85,34 @@ class DEVMODE(ctypes.Structure):
 
 # ── LibreHardwareMonitor (temperature) ────────────────────────────────────────
 _lhm_computer = None
+_lhm_error    = ""
 
 def _lhm_dll_path():
     base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "LibreHardwareMonitorLib.dll")
 
-def init_lhm() -> bool:
-    global _lhm_computer
+# Configure .NET runtime before any clr import — must happen at module level
+try:
+    import pythonnet
     try:
-        import clr  # pythonnet
-        clr.AddReference(_lhm_dll_path())
+        pythonnet.load("netfx")     # .NET Framework 4.x — most compatible on Windows
+    except Exception:
+        try:
+            pythonnet.load("coreclr")   # .NET 5/6/7/8 fallback
+        except Exception:
+            pass
+except Exception:
+    pass
+
+def init_lhm() -> bool:
+    global _lhm_computer, _lhm_error
+    try:
+        import clr
+        dll = _lhm_dll_path()
+        if not os.path.exists(dll):
+            _lhm_error = f"DLL not found: {dll}"
+            return False
+        clr.AddReference(dll)
         from LibreHardwareMonitor.Hardware import Computer
         computer = Computer()
         computer.IsCpuEnabled = True
@@ -102,7 +120,8 @@ def init_lhm() -> bool:
         computer.Open()
         _lhm_computer = computer
         return True
-    except Exception:
+    except Exception as e:
+        _lhm_error = str(e)
         return False
 
 def get_temperatures() -> tuple:
@@ -337,7 +356,8 @@ class App(tk.Tk):
         self._gpu_name_label.pack(side="left", padx=(8, 0))
 
         if not self._lhm_ok:
-            tk.Label(temp_bar, text="(sensor init failed)",
+            err_short = _lhm_error[:60] + "…" if len(_lhm_error) > 60 else _lhm_error
+            tk.Label(temp_bar, text=f"sensor error: {err_short}",
                      font=("Segoe UI", 8), bg=SURFACE, fg=RED).pack(side="right")
 
         # Monitor list
