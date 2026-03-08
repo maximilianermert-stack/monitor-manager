@@ -269,6 +269,22 @@ def make_primary(device: str, monitors: list) -> bool:
     return result == DISP_CHANGE_SUCCESSFUL
 
 
+def toggle_hdr():
+    """Toggle HDR via Win+Alt+B (Windows 11 built-in shortcut)."""
+    KEYEVENTF_KEYUP = 0x0002
+    VK_LWIN         = 0x5B
+    VK_MENU         = 0x12   # Alt
+    VK_B            = 0x42
+
+    kbe = ctypes.windll.user32.keybd_event
+    kbe(VK_LWIN, 0, 0, 0)
+    kbe(VK_MENU, 0, 0, 0)
+    kbe(VK_B,    0, 0, 0)
+    kbe(VK_B,    0, KEYEVENTF_KEYUP, 0)
+    kbe(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+    kbe(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
+
+
 def start_screensaver():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
@@ -351,9 +367,10 @@ class App(tk.Tk):
         # Bottom bar
         bar = tk.Frame(self, bg=BG, padx=16, pady=14)
         bar.pack(fill="x")
-        make_btn(bar, "Turn Off All",     turn_off_all,      RED  ).pack(side="left", padx=(0, 8))
-        make_btn(bar, "Screensaver Mode", start_screensaver, BLUE ).pack(side="left")
-        make_btn(bar, "↻  Refresh",       self.refresh,      GREEN).pack(side="right")
+        make_btn(bar, "Turn Off All", turn_off_all,      RED   ).pack(side="left", padx=(0, 8))
+        make_btn(bar, "Screensaver",  start_screensaver, BLUE  ).pack(side="left", padx=(0, 8))
+        make_btn(bar, "Toggle HDR",   toggle_hdr,        PURPLE).pack(side="left")
+        make_btn(bar, "↻  Refresh",   self.refresh,      GREEN ).pack(side="right")
 
     # ── Temperature polling (background thread) ──────────────────────────────
     def _schedule_temp_update(self):
