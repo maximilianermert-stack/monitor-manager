@@ -514,6 +514,12 @@ class App(tk.Tk):
                                        font=("Segoe UI", 8), bg=SURFACE, fg=SUBTEXT)
         self._gpu_name_lbl.pack(side="left", padx=(8, 0))
 
+        tk.Label(temp_bar, text="System", font=("Segoe UI", 9, "bold"),
+                 bg=SURFACE, fg=SUBTEXT).pack(side="left", padx=(24, 0))
+        self._pwr_lbl = tk.Label(temp_bar, text="—",
+                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=YELLOW)
+        self._pwr_lbl.pack(side="left", padx=(6, 0))
+
         # Monitor list
         self.list_frame = tk.Frame(self, bg=BG, padx=16)
         self.list_frame.pack(fill="both", pady=(12, 0))
@@ -592,16 +598,20 @@ class App(tk.Tk):
 
     def _apply_temps(self, cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name):
         cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
-        if cpu_load  is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
-        if cpu_power is not None: cpu_text += f"  ·  {cpu_power:.0f} W"
+        if cpu_load is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
         self._cpu_lbl.config(text=cpu_text)
 
         gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
-        if gpu_load  is not None: gpu_text += f"  ·  {gpu_load:.0f}%"
-        if gpu_power is not None: gpu_text += f"  ·  {gpu_power:.0f} W"
+        if gpu_load is not None: gpu_text += f"  ·  {gpu_load:.0f}%"
         self._gpu_lbl.config(text=gpu_text)
 
         self._gpu_name_lbl.config(text=gpu_name or "")
+
+        parts = [p for p in (cpu_power, gpu_power) if p is not None]
+        if parts:
+            self._pwr_lbl.config(text=f"{sum(parts):.0f} W")
+        else:
+            self._pwr_lbl.config(text="N/A")
 
     # ── Monitor cards ────────────────────────────────────────────────────────
     def refresh(self):
