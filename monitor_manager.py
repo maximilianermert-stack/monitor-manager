@@ -11,6 +11,7 @@ import ctypes.wintypes
 import winreg
 import subprocess
 import threading
+import json
 import os
 import sys
 
@@ -86,130 +87,36 @@ class DEVMODE(ctypes.Structure):
         ("dmDisplayFrequency",   ctypes.c_ulong),
     ]
 
-# ── Temperature reading ────────────────────────────────────────────────────────
+# ── Temperature reading via bundled TempReader.exe (LHM / C#) ─────────────────
 
-def _run(cmd, timeout=6):
-    """Run a command silently, return stdout or None."""
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, creationflags=CREATE_NO_WINDOW)
-        return r.stdout.strip() if r.returncode == 0 else None
-    except Exception:
-        return None
-
-
-def get_cpu_temp():
-    """CPU temperature — tries two WMI methods, returns the highest valid reading."""
-    script = (
-        "$results = @();"
-
-        # Method 1: ACPI thermal zones (works on many laptops + some desktops)
-        "$acpi = Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
-        "-ErrorAction SilentlyContinue;"
-        "if ($acpi) {"
-        "  $max = ($acpi.CurrentTemperature | Measure-Object -Maximum).Maximum;"
-        "  if ($max -gt 0) { $results += [math]::Round($max / 10 - 273.15, 1) }"
-        "};"
-
-        # Method 2: Windows Performance Counter thermal zones (Windows 10/11 desktops)
-        "$perf = Get-WmiObject Win32_PerfFormattedData_Counters_ThermalZoneInformation "
-        "-ErrorAction SilentlyContinue;"
-        "if ($perf) {"
-        "  $max = ($perf.Temperature | Measure-Object -Maximum).Maximum;"
-        "  if ($max -gt 273) { $results += [math]::Round($max - 273.15, 1) }"
-        "};"
-
-        "if ($results) { ($results | Measure-Object -Maximum).Maximum }"
-    )
-    out = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
-    if out:
-        try:
-            t = round(float(out), 1)
-            return t if 0 < t < 150 else None
-        except ValueError:
-            pass
-    return None
-
-
-def get_gpu_temp():
-    """GPU temperature — tries NVIDIA, then AMD. Returns (temp, name)."""
-
-    # ── NVIDIA via nvidia-smi ──────────────────────────────────────────────────
-    out = _run(["nvidia-smi",
-                "--query-gpu=temperature.gpu,name",
-                "--format=csv,noheader,nounits"])
-    if out:
-        try:
-            parts = out.split(",")
-            temp = float(parts[0].strip())
-            name = parts[1].strip() if len(parts) > 1 else "NVIDIA GPU"
-            if 0 < temp < 150:
-                return temp, name
-        except (ValueError, IndexError):
-            pass
-
-    # ── AMD via ADL (atiadlxx.dll — installed with AMD drivers) ───────────────
-    temp = _get_amd_temp()
-    if temp is not None:
-        return temp, "AMD GPU"
-
-    return None, None
-
-
-def _get_amd_temp():
-    """Read GPU temperature via AMD Display Library ctypes binding."""
-    adl = None
-    for lib in ("atiadlxx.dll", "atiadlxy.dll"):
-        try:
-            adl = ctypes.WinDLL(lib)
-            break
-        except OSError:
-            continue
-    if adl is None:
-        return None
-
-    try:
-        _allocs = []
-        MallocCB = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
-
-        def _malloc(size):
-            buf = ctypes.create_string_buffer(size)
-            _allocs.append(buf)
-            return ctypes.cast(buf, ctypes.c_void_p).value
-
-        malloc_cb = MallocCB(_malloc)
-
-        adl.ADL_Main_Control_Create.restype  = ctypes.c_int
-        adl.ADL_Main_Control_Create.argtypes = [MallocCB, ctypes.c_int]
-        if adl.ADL_Main_Control_Create(malloc_cb, 1) != 0:
-            return None
-
-        class ADLTemperature(ctypes.Structure):
-            _fields_ = [("iSize", ctypes.c_int), ("iTemperature", ctypes.c_int)]
-
-        adl.ADL_Overdrive5_Temperature_Get.restype  = ctypes.c_int
-        adl.ADL_Overdrive5_Temperature_Get.argtypes = [
-            ctypes.c_int, ctypes.c_int, ctypes.POINTER(ADLTemperature)
-        ]
-
-        ts = ADLTemperature()
-        ts.iSize = ctypes.sizeof(ADLTemperature)
-        if adl.ADL_Overdrive5_Temperature_Get(0, 0, ctypes.byref(ts)) == 0:
-            temp = ts.iTemperature / 1000.0
-            adl.ADL_Main_Control_Destroy()
-            return temp if 0 < temp < 150 else None
-
-        adl.ADL_Main_Control_Destroy()
-    except Exception:
-        pass
-    return None
+def _tempreader_path():
+    base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "tempreader", "TempReader.exe")
 
 
 def get_temperatures():
-    """Returns (cpu_temp, gpu_temp, gpu_name) — float °C or None."""
-    cpu          = get_cpu_temp()
-    gpu, gpu_name = get_gpu_temp()
-    return cpu, gpu, gpu_name
+    """
+    Returns (cpu_temp, gpu_temp, gpu_name) — float °C or None.
+    Calls the bundled TempReader.exe which uses LibreHardwareMonitor.
+    Supports all CPU brands and NVIDIA / AMD / Intel GPUs.
+    """
+    try:
+        exe = _tempreader_path()
+        result = subprocess.run(
+            [exe], capture_output=True, text=True,
+            timeout=10, creationflags=CREATE_NO_WINDOW
+        )
+        data     = json.loads(result.stdout.strip())
+        cpu      = data.get("cpu")
+        gpu      = data.get("gpu")
+        gpu_name = data.get("gpu_name") or ""
+        return (
+            round(float(cpu), 1) if cpu is not None else None,
+            round(float(gpu), 1) if gpu is not None else None,
+            gpu_name,
+        )
+    except Exception:
+        return None, None, None
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(

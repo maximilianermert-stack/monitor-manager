@@ -33,6 +33,11 @@ jobs:
       - name: Install PyInstaller
         run: pip install pyinstaller
 
+      - name: Build TempReader (C# / LHM)
+        run: |
+          cd tempreader
+          dotnet publish -c Release --framework net472 -o ../tempreader_out
+
       - name: Build standalone EXE
         run: >
           pyinstaller
@@ -40,6 +45,7 @@ jobs:
           --windowed
           --name "MonitorManager"
           --uac-admin
+          --add-data "tempreader_out;tempreader"
           monitor_manager.py
 
       - name: Upload artifact (auto build)
