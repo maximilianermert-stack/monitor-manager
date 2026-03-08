@@ -33,6 +33,9 @@ DISP_CHANGE_SUCCESSFUL      = 0
 DISPLAY_DEVICE_ACTIVE       = 0x00000001
 CREATE_NO_WINDOW            = 0x08000000
 
+QDC_ONLY_ACTIVE_PATHS       = 0x00000002
+DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9
+
 # ── Structures ─────────────────────────────────────────────────────────────────
 class RECT(ctypes.Structure):
     _fields_ = [
@@ -269,6 +272,93 @@ def make_primary(device: str, monitors: list) -> bool:
     return result == DISP_CHANGE_SUCCESSFUL
 
 
+# ── HDR state structures ───────────────────────────────────────────────────────
+class LUID(ctypes.Structure):
+    _fields_ = [("LowPart", ctypes.c_ulong), ("HighPart", ctypes.c_long)]
+
+class DISPLAYCONFIG_RATIONAL(ctypes.Structure):
+    _fields_ = [("Numerator", ctypes.c_uint), ("Denominator", ctypes.c_uint)]
+
+class DISPLAYCONFIG_PATH_SOURCE_INFO(ctypes.Structure):
+    _fields_ = [
+        ("adapterId",    LUID),
+        ("id",           ctypes.c_uint),
+        ("modeInfoIdx",  ctypes.c_uint),
+        ("statusFlags",  ctypes.c_uint),
+    ]
+
+class DISPLAYCONFIG_PATH_TARGET_INFO(ctypes.Structure):
+    _fields_ = [
+        ("adapterId",        LUID),
+        ("id",               ctypes.c_uint),
+        ("modeInfoIdx",      ctypes.c_uint),
+        ("outputTechnology", ctypes.c_int),
+        ("rotation",         ctypes.c_int),
+        ("scaling",          ctypes.c_int),
+        ("refreshRate",      DISPLAYCONFIG_RATIONAL),
+        ("scanLineOrdering", ctypes.c_int),
+        ("targetAvailable",  ctypes.c_bool),
+        ("statusFlags",      ctypes.c_uint),
+    ]
+
+class DISPLAYCONFIG_PATH_INFO(ctypes.Structure):
+    _fields_ = [
+        ("sourceInfo", DISPLAYCONFIG_PATH_SOURCE_INFO),
+        ("targetInfo", DISPLAYCONFIG_PATH_TARGET_INFO),
+        ("flags",      ctypes.c_uint),
+    ]
+
+class DISPLAYCONFIG_MODE_INFO(ctypes.Structure):
+    # Padded to 80 bytes — we only need this array to satisfy QueryDisplayConfig
+    _fields_ = [("_data", ctypes.c_byte * 80)]
+
+class DISPLAYCONFIG_DEVICE_INFO_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("type",       ctypes.c_int),
+        ("size",       ctypes.c_ulong),
+        ("adapterId",  LUID),
+        ("id",         ctypes.c_uint),
+    ]
+
+class DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO(ctypes.Structure):
+    _fields_ = [
+        ("header",             DISPLAYCONFIG_DEVICE_INFO_HEADER),
+        ("value",              ctypes.c_uint),   # bit 1 = advancedColorEnabled
+        ("colorEncoding",      ctypes.c_int),
+        ("bitsPerColorChannel",ctypes.c_uint),
+    ]
+
+def get_hdr_state() -> bool:
+    """Returns True if HDR (Advanced Color) is enabled on any active display."""
+    try:
+        num_paths = ctypes.c_uint(0)
+        num_modes = ctypes.c_uint(0)
+        if ctypes.windll.user32.GetDisplayConfigBufferSizes(
+                QDC_ONLY_ACTIVE_PATHS,
+                ctypes.byref(num_paths), ctypes.byref(num_modes)) != 0:
+            return False
+
+        paths = (DISPLAYCONFIG_PATH_INFO * num_paths.value)()
+        modes = (DISPLAYCONFIG_MODE_INFO * num_modes.value)()
+        if ctypes.windll.user32.QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                ctypes.byref(num_paths), paths,
+                ctypes.byref(num_modes), modes, None) != 0:
+            return False
+
+        for path in paths:
+            info = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO()
+            info.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO
+            info.header.size      = ctypes.sizeof(DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO)
+            info.header.adapterId = path.targetInfo.adapterId
+            info.header.id        = path.targetInfo.id
+            if ctypes.windll.user32.DisplayConfigGetDeviceInfo(ctypes.byref(info)) == 0:
+                return bool(info.value & 0x2)  # advancedColorEnabled bit
+    except Exception:
+        pass
+    return False
+
+
 def toggle_hdr():
     """Toggle HDR via Win+Alt+B (Windows 11 built-in shortcut)."""
     KEYEVENTF_KEYUP = 0x0002
@@ -367,10 +457,14 @@ class App(tk.Tk):
         # Bottom bar
         bar = tk.Frame(self, bg=BG, padx=16, pady=14)
         bar.pack(fill="x")
-        make_btn(bar, "Turn Off All", turn_off_all,      RED   ).pack(side="left", padx=(0, 8))
-        make_btn(bar, "Screensaver",  start_screensaver, BLUE  ).pack(side="left", padx=(0, 8))
-        make_btn(bar, "Toggle HDR",   toggle_hdr,        PURPLE).pack(side="left")
-        make_btn(bar, "↻  Refresh",   self.refresh,      GREEN ).pack(side="right")
+        make_btn(bar, "Turn Off All", turn_off_all,      RED ).pack(side="left", padx=(0, 8))
+        make_btn(bar, "Screensaver",  start_screensaver, BLUE).pack(side="left", padx=(0, 8))
+
+        self._hdr_btn = make_btn(bar, "HDR", self._on_toggle_hdr, RED)
+        self._hdr_btn.pack(side="left")
+
+        make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="right")
+        self._refresh_hdr_btn()
 
     # ── Temperature polling (background thread) ──────────────────────────────
     def _schedule_temp_update(self):
@@ -378,8 +472,22 @@ class App(tk.Tk):
 
     def _fetch_temps(self):
         cpu, gpu, gpu_name = get_temperatures()
+        hdr = get_hdr_state()
         self.after(0, lambda: self._apply_temps(cpu, gpu, gpu_name))
+        self.after(0, lambda: self._apply_hdr_color(hdr))
         self.after(3000, self._schedule_temp_update)
+
+    def _refresh_hdr_btn(self):
+        self._apply_hdr_color(get_hdr_state())
+
+    def _apply_hdr_color(self, hdr_on: bool):
+        color = GREEN if hdr_on else RED
+        self._hdr_btn.config(fg=color, activeforeground=color)
+
+    def _on_toggle_hdr(self):
+        toggle_hdr()
+        # Re-read state after a short delay for the OS to apply the change
+        self.after(600, self._refresh_hdr_btn)
 
     def _apply_temps(self, cpu, gpu, gpu_name):
         self._cpu_lbl.config(text=f"{cpu:.0f} °C" if cpu is not None else "N/A")
