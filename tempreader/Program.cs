@@ -11,8 +11,10 @@ computer.Open();
 
 float? cpuTemp  = null;
 float? cpuLoad  = null;
+float? cpuPower = null;
 float? gpuTemp  = null;
 float? gpuLoad  = null;
+float? gpuPower = null;
 string gpuName  = "";
 
 foreach (var hw in computer.Hardware)
@@ -41,6 +43,9 @@ foreach (var hw in computer.Hardware)
             }
             else if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
                 cpuLoad = sensor.Value;
+            else if (sensor.SensorType == SensorType.Power && cpuPower == null
+                     && (sensor.Name.Contains("Package") || sensor.Name.Contains("CPU")))
+                cpuPower = sensor.Value;
         }
         else if (isGpu)
         {
@@ -52,6 +57,8 @@ foreach (var hw in computer.Hardware)
             else if (sensor.SensorType == SensorType.Load && gpuLoad == null
                      && sensor.Name.Contains("Core"))
                 gpuLoad = sensor.Value;
+            else if (sensor.SensorType == SensorType.Power && gpuPower == null)
+                gpuPower = sensor.Value;
         }
     }
 }
@@ -60,9 +67,11 @@ computer.Close();
 
 Console.WriteLine(JsonConvert.SerializeObject(new
 {
-    cpu      = cpuTemp,
-    cpu_load = cpuLoad,
-    gpu      = gpuTemp,
-    gpu_load = gpuLoad,
-    gpu_name = gpuName,
+    cpu       = cpuTemp,
+    cpu_load  = cpuLoad,
+    cpu_power = cpuPower,
+    gpu       = gpuTemp,
+    gpu_load  = gpuLoad,
+    gpu_power = gpuPower,
+    gpu_name  = gpuName,
 }));

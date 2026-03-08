@@ -106,7 +106,7 @@ def _tempreader_path():
 
 def get_temperatures():
     """
-    Returns (cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name).
+    Returns (cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name).
     Values are float or None. Calls the bundled TempReader.exe (LibreHardwareMonitor).
     """
     try:
@@ -115,21 +115,25 @@ def get_temperatures():
             [exe], capture_output=True, text=True,
             timeout=10, creationflags=CREATE_NO_WINDOW
         )
-        data     = json.loads(result.stdout.strip())
-        cpu      = data.get("cpu")
-        cpu_load = data.get("cpu_load")
-        gpu      = data.get("gpu")
-        gpu_load = data.get("gpu_load")
-        gpu_name = data.get("gpu_name") or ""
+        data      = json.loads(result.stdout.strip())
+        cpu       = data.get("cpu")
+        cpu_load  = data.get("cpu_load")
+        cpu_power = data.get("cpu_power")
+        gpu       = data.get("gpu")
+        gpu_load  = data.get("gpu_load")
+        gpu_power = data.get("gpu_power")
+        gpu_name  = data.get("gpu_name") or ""
         return (
-            round(float(cpu),      1) if cpu      is not None else None,
-            round(float(cpu_load), 1) if cpu_load is not None else None,
-            round(float(gpu),      1) if gpu      is not None else None,
-            round(float(gpu_load), 1) if gpu_load is not None else None,
+            round(float(cpu),       1) if cpu       is not None else None,
+            round(float(cpu_load),  1) if cpu_load  is not None else None,
+            round(float(cpu_power), 1) if cpu_power is not None else None,
+            round(float(gpu),       1) if gpu       is not None else None,
+            round(float(gpu_load),  1) if gpu_load  is not None else None,
+            round(float(gpu_power), 1) if gpu_power is not None else None,
             gpu_name,
         )
     except Exception:
-        return None, None, None, None, ""
+        return None, None, None, None, None, None, ""
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -569,9 +573,9 @@ class App(tk.Tk):
         threading.Thread(target=self._fetch_temps, daemon=True).start()
 
     def _fetch_temps(self):
-        cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name = get_temperatures()
+        cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name = get_temperatures()
         hdr = get_hdr_state()
-        self.after(0, lambda: self._apply_temps(cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name))
+        self.after(0, lambda: self._apply_temps(cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name))
         self.after(0, lambda: self._apply_hdr_color(hdr))
         self.after(3000, self._schedule_temp_update)
 
@@ -586,15 +590,15 @@ class App(tk.Tk):
         toggle_hdr()
         self.after(600, self._refresh_hdr_btn)
 
-    def _apply_temps(self, cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name):
+    def _apply_temps(self, cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name):
         cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
-        if cpu_load is not None:
-            cpu_text += f"  ·  {cpu_load:.0f}%"
+        if cpu_load  is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
+        if cpu_power is not None: cpu_text += f"  ·  {cpu_power:.0f} W"
         self._cpu_lbl.config(text=cpu_text)
 
         gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
-        if gpu_load is not None:
-            gpu_text += f"  ·  {gpu_load:.0f}%"
+        if gpu_load  is not None: gpu_text += f"  ·  {gpu_load:.0f}%"
+        if gpu_power is not None: gpu_text += f"  ·  {gpu_power:.0f} W"
         self._gpu_lbl.config(text=gpu_text)
 
         self._gpu_name_lbl.config(text=gpu_name or "")
