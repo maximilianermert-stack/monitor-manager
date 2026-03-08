@@ -41,9 +41,12 @@ jobs:
           Write-Host "Downloading: $($asset.name)"
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "lhm.zip"
           Expand-Archive -Path "lhm.zip" -DestinationPath "lhm_files"
-          $dll = Get-ChildItem -Path "lhm_files" -Filter "LibreHardwareMonitorLib.dll" -Recurse | Select-Object -First 1
-          Write-Host "Found DLL at: $($dll.FullName)"
-          Copy-Item $dll.FullName "."
+          # Copy ALL files from the zip — LHM needs its dependency DLLs alongside it
+          New-Item -ItemType Directory -Path "lhm" -Force
+          Get-ChildItem -Path "lhm_files" -Recurse -File | ForEach-Object {
+            Copy-Item $_.FullName "lhm\"
+            Write-Host "Bundling: $($_.Name)"
+          }
 
       - name: Build standalone EXE
         run: |
@@ -52,7 +55,7 @@ jobs:
             --windowed `
             --name "MonitorManager" `
             --uac-admin `
-            --add-binary "LibreHardwareMonitorLib.dll;." `
+            --add-data "lhm;lhm" `
             --collect-all pythonnet `
             monitor_manager.py
 

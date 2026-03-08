@@ -87,9 +87,12 @@ class DEVMODE(ctypes.Structure):
 _lhm_computer = None
 _lhm_error    = ""
 
-def _lhm_dll_path():
+def _lhm_dir():
     base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "LibreHardwareMonitorLib.dll")
+    return os.path.join(base, "lhm")
+
+def _lhm_dll_path():
+    return os.path.join(_lhm_dir(), "LibreHardwareMonitorLib.dll")
 
 # Configure .NET runtime before any clr import — must happen at module level
 try:
@@ -112,11 +115,13 @@ def init_lhm() -> bool:
         if not os.path.exists(dll):
             _lhm_error = f"DLL not found: {dll}"
             return False
-        # Add the DLL's directory to sys.path so pythonnet can resolve it by name
-        dll_dir = os.path.dirname(dll)
-        if dll_dir not in sys.path:
-            sys.path.insert(0, dll_dir)
-        clr.AddReference("LibreHardwareMonitorLib")
+        # Add lhm/ dir to sys.path so .NET can resolve dependency DLLs
+        lhm_dir = _lhm_dir()
+        if lhm_dir not in sys.path:
+            sys.path.insert(0, lhm_dir)
+        # LoadFrom loads by exact path — correct for pythonnet 3.x
+        from System.Reflection import Assembly
+        Assembly.LoadFrom(dll)
         from LibreHardwareMonitor.Hardware import Computer
         computer = Computer()
         computer.IsCpuEnabled = True
