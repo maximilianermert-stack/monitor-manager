@@ -1,3 +1,4 @@
+using System;
 using LibreHardwareMonitor.Hardware;
 using Newtonsoft.Json;
 
