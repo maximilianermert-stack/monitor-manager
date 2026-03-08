@@ -1,7 +1,7 @@
 """
 Monitor Manager
 Run on Windows with Python 3.x — no extra dependencies needed.
-Requires administrator privileges for hardware temperature reading.
+Requires administrator privileges for full hardware access.
 """
 
 import tkinter as tk
@@ -10,6 +10,7 @@ import ctypes
 import ctypes.wintypes
 import winreg
 import subprocess
+import threading
 import os
 import sys
 
@@ -28,6 +29,7 @@ CDS_NORESET                 = 0x10000000
 DISP_CHANGE_SUCCESSFUL      = 0
 
 DISPLAY_DEVICE_ACTIVE       = 0x00000001
+CREATE_NO_WINDOW            = 0x08000000
 
 # ── Structures ─────────────────────────────────────────────────────────────────
 class RECT(ctypes.Structure):
@@ -83,98 +85,114 @@ class DEVMODE(ctypes.Structure):
         ("dmDisplayFrequency",   ctypes.c_ulong),
     ]
 
-# ── LibreHardwareMonitor (temperature) ────────────────────────────────────────
-_lhm_computer = None
-_lhm_error    = ""
+# ── Temperature reading ────────────────────────────────────────────────────────
 
-def _lhm_dir():
-    base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "lhm")
-
-def _lhm_dll_path():
-    return os.path.join(_lhm_dir(), "LibreHardwareMonitorLib.dll")
-
-# Configure .NET runtime before any clr import — must happen at module level
-try:
-    import pythonnet
+def _run(cmd, timeout=6):
+    """Run a command silently, return stdout or None."""
     try:
-        pythonnet.load("netfx")     # .NET Framework 4.x — most compatible on Windows
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
+        return None
+
+
+def get_cpu_temp():
+    """CPU package temperature via WMI thermal zones (all brands)."""
+    out = _run([
+        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        "$t=(Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
+        "-ErrorAction SilentlyContinue).CurrentTemperature;"
+        "if($t){($t|Measure-Object -Maximum).Maximum/10-273.15}"
+    ])
+    if out:
         try:
-            pythonnet.load("coreclr")   # .NET 5/6/7/8 fallback
-        except Exception:
+            t = round(float(out), 1)
+            return t if 0 < t < 150 else None
+        except ValueError:
             pass
-except Exception:
-    pass
+    return None
 
-def init_lhm() -> bool:
-    global _lhm_computer, _lhm_error
+
+def get_gpu_temp():
+    """GPU temperature — tries NVIDIA, then AMD. Returns (temp, name)."""
+
+    # ── NVIDIA via nvidia-smi ──────────────────────────────────────────────────
+    out = _run(["nvidia-smi",
+                "--query-gpu=temperature.gpu,name",
+                "--format=csv,noheader,nounits"])
+    if out:
+        try:
+            parts = out.split(",")
+            temp = float(parts[0].strip())
+            name = parts[1].strip() if len(parts) > 1 else "NVIDIA GPU"
+            if 0 < temp < 150:
+                return temp, name
+        except (ValueError, IndexError):
+            pass
+
+    # ── AMD via ADL (atiadlxx.dll — installed with AMD drivers) ───────────────
+    temp = _get_amd_temp()
+    if temp is not None:
+        return temp, "AMD GPU"
+
+    return None, None
+
+
+def _get_amd_temp():
+    """Read GPU temperature via AMD Display Library ctypes binding."""
+    adl = None
+    for lib in ("atiadlxx.dll", "atiadlxy.dll"):
+        try:
+            adl = ctypes.WinDLL(lib)
+            break
+        except OSError:
+            continue
+    if adl is None:
+        return None
+
     try:
-        import clr
-        dll = _lhm_dll_path()
-        if not os.path.exists(dll):
-            _lhm_error = f"DLL not found: {dll}"
-            return False
-        # Add lhm/ dir to sys.path so .NET can resolve dependency DLLs
-        lhm_dir = _lhm_dir()
-        if lhm_dir not in sys.path:
-            sys.path.insert(0, lhm_dir)
-        # LoadFrom loads by exact path — correct for pythonnet 3.x
-        from System.Reflection import Assembly
-        Assembly.LoadFrom(dll)
-        from LibreHardwareMonitor.Hardware import Computer
-        computer = Computer()
-        computer.IsCpuEnabled = True
-        computer.IsGpuEnabled = True
-        computer.Open()
-        _lhm_computer = computer
-        return True
-    except Exception as e:
-        _lhm_error = str(e)
-        return False
+        _allocs = []
+        MallocCB = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
 
-def get_temperatures() -> tuple:
-    """Returns (cpu_temp, gpu_temp, gpu_name) — values are float °C or None."""
-    if _lhm_computer is None:
-        return None, None, None
-    try:
-        from LibreHardwareMonitor.Hardware import HardwareType, SensorType
-        cpu_temp = None
-        gpu_temp = None
-        gpu_name = None
+        def _malloc(size):
+            buf = ctypes.create_string_buffer(size)
+            _allocs.append(buf)
+            return ctypes.cast(buf, ctypes.c_void_p).value
 
-        for hw in _lhm_computer.Hardware:
-            hw.Update()
-            hw_type = hw.HardwareType
-            is_cpu  = hw_type == HardwareType.Cpu
-            is_gpu  = hw_type in (
-                HardwareType.GpuNvidia,
-                HardwareType.GpuAmd,
-                HardwareType.GpuIntel,
-            )
+        malloc_cb = MallocCB(_malloc)
 
-            for sensor in hw.Sensors:
-                if sensor.SensorType != SensorType.Temperature:
-                    continue
-                if sensor.Value is None:
-                    continue
-                val  = float(sensor.Value)
-                name = str(sensor.Name)
+        adl.ADL_Main_Control_Create.restype  = ctypes.c_int
+        adl.ADL_Main_Control_Create.argtypes = [MallocCB, ctypes.c_int]
+        if adl.ADL_Main_Control_Create(malloc_cb, 1) != 0:
+            return None
 
-                if is_cpu:
-                    # Prefer package/average temp over individual core temps
-                    if "Package" in name or "Average" in name:
-                        cpu_temp = val
-                    elif cpu_temp is None:
-                        cpu_temp = val
+        class ADLTemperature(ctypes.Structure):
+            _fields_ = [("iSize", ctypes.c_int), ("iTemperature", ctypes.c_int)]
 
-                elif is_gpu and gpu_temp is None:
-                    gpu_temp = val
-                    gpu_name = str(hw.Name)
+        adl.ADL_Overdrive5_Temperature_Get.restype  = ctypes.c_int
+        adl.ADL_Overdrive5_Temperature_Get.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.POINTER(ADLTemperature)
+        ]
 
-        return cpu_temp, gpu_temp, gpu_name
+        ts = ADLTemperature()
+        ts.iSize = ctypes.sizeof(ADLTemperature)
+        if adl.ADL_Overdrive5_Temperature_Get(0, 0, ctypes.byref(ts)) == 0:
+            temp = ts.iTemperature / 1000.0
+            adl.ADL_Main_Control_Destroy()
+            return temp if 0 < temp < 150 else None
+
+        adl.ADL_Main_Control_Destroy()
     except Exception:
-        return None, None, None
+        pass
+    return None
+
+
+def get_temperatures():
+    """Returns (cpu_temp, gpu_temp, gpu_name) — float °C or None."""
+    cpu          = get_cpu_temp()
+    gpu, gpu_name = get_gpu_temp()
+    return cpu, gpu, gpu_name
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -331,12 +349,10 @@ class App(tk.Tk):
         self.title("Monitor Manager")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self._lhm_ok = init_lhm()
         self._build_ui()
         self.refresh()
-        self._tick_temps()
+        self._schedule_temp_update()
 
-    # ── Layout ──────────────────────────────────────────────────────────────────
     def _build_ui(self):
         # Header
         hdr = tk.Frame(self, bg=BG, padx=16, pady=14)
@@ -350,24 +366,19 @@ class App(tk.Tk):
 
         tk.Label(temp_bar, text="CPU", font=("Segoe UI", 9, "bold"),
                  bg=SURFACE, fg=SUBTEXT).pack(side="left")
-        self._cpu_label = tk.Label(temp_bar, text="—",
-                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=PEACH)
-        self._cpu_label.pack(side="left", padx=(6, 24))
+        self._cpu_lbl = tk.Label(temp_bar, text="—",
+                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=PEACH)
+        self._cpu_lbl.pack(side="left", padx=(6, 24))
 
         tk.Label(temp_bar, text="GPU", font=("Segoe UI", 9, "bold"),
                  bg=SURFACE, fg=SUBTEXT).pack(side="left")
-        self._gpu_label = tk.Label(temp_bar, text="—",
-                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=BLUE)
-        self._gpu_label.pack(side="left", padx=(6, 0))
+        self._gpu_lbl = tk.Label(temp_bar, text="—",
+                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=BLUE)
+        self._gpu_lbl.pack(side="left", padx=(6, 0))
 
-        self._gpu_name_label = tk.Label(temp_bar, text="",
-                                        font=("Segoe UI", 8), bg=SURFACE, fg=SUBTEXT)
-        self._gpu_name_label.pack(side="left", padx=(8, 0))
-
-        if not self._lhm_ok:
-            err_short = _lhm_error[:60] + "…" if len(_lhm_error) > 60 else _lhm_error
-            tk.Label(temp_bar, text=f"sensor error: {err_short}",
-                     font=("Segoe UI", 8), bg=SURFACE, fg=RED).pack(side="right")
+        self._gpu_name_lbl = tk.Label(temp_bar, text="",
+                                       font=("Segoe UI", 8), bg=SURFACE, fg=SUBTEXT)
+        self._gpu_name_lbl.pack(side="left", padx=(8, 0))
 
         # Monitor list
         self.list_frame = tk.Frame(self, bg=BG, padx=16)
@@ -383,17 +394,21 @@ class App(tk.Tk):
         make_btn(bar, "Screensaver Mode", start_screensaver, BLUE ).pack(side="left")
         make_btn(bar, "↻  Refresh",       self.refresh,      GREEN).pack(side="right")
 
-    # ── Temperature polling ──────────────────────────────────────────────────────
-    def _tick_temps(self):
+    # ── Temperature polling (background thread) ──────────────────────────────
+    def _schedule_temp_update(self):
+        threading.Thread(target=self._fetch_temps, daemon=True).start()
+
+    def _fetch_temps(self):
         cpu, gpu, gpu_name = get_temperatures()
+        self.after(0, lambda: self._apply_temps(cpu, gpu, gpu_name))
+        self.after(3000, self._schedule_temp_update)
 
-        self._cpu_label.config(text=f"{cpu:.0f} °C" if cpu is not None else "N/A")
-        self._gpu_label.config(text=f"{gpu:.0f} °C" if gpu is not None else "N/A")
-        self._gpu_name_label.config(text=gpu_name or "")
+    def _apply_temps(self, cpu, gpu, gpu_name):
+        self._cpu_lbl.config(text=f"{cpu:.0f} °C" if cpu is not None else "N/A")
+        self._gpu_lbl.config(text=f"{gpu:.0f} °C" if gpu is not None else "N/A")
+        self._gpu_name_lbl.config(text=gpu_name or "")
 
-        self.after(2000, self._tick_temps)
-
-    # ── Monitor cards ────────────────────────────────────────────────────────────
+    # ── Monitor cards ────────────────────────────────────────────────────────
     def refresh(self):
         for w in self.list_frame.winfo_children():
             w.destroy()
@@ -457,7 +472,6 @@ class App(tk.Tk):
         tk.Label(card, text=dev["description"],
                  font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(anchor="w", pady=(5, 0))
 
-    # ── Handlers ────────────────────────────────────────────────────────────────
     def _on_disable(self, device: str, primary: bool):
         if disable_monitor(device, primary):
             self.refresh()
