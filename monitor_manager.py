@@ -15,6 +15,13 @@ import json
 import os
 import sys
 
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    _TRAY_AVAILABLE = True
+except ImportError:
+    _TRAY_AVAILABLE = False
+
 # ── Windows API constants ──────────────────────────────────────────────────────
 MONITORINFOF_PRIMARY        = 0x00000001
 WM_SYSCOMMAND               = 0x0112
@@ -99,9 +106,8 @@ def _tempreader_path():
 
 def get_temperatures():
     """
-    Returns (cpu_temp, gpu_temp, gpu_name) — float °C or None.
-    Calls the bundled TempReader.exe which uses LibreHardwareMonitor.
-    Supports all CPU brands and NVIDIA / AMD / Intel GPUs.
+    Returns (cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name).
+    Values are float or None. Calls the bundled TempReader.exe (LibreHardwareMonitor).
     """
     try:
         exe = _tempreader_path()
@@ -111,15 +117,19 @@ def get_temperatures():
         )
         data     = json.loads(result.stdout.strip())
         cpu      = data.get("cpu")
+        cpu_load = data.get("cpu_load")
         gpu      = data.get("gpu")
+        gpu_load = data.get("gpu_load")
         gpu_name = data.get("gpu_name") or ""
         return (
-            round(float(cpu), 1) if cpu is not None else None,
-            round(float(gpu), 1) if gpu is not None else None,
+            round(float(cpu),      1) if cpu      is not None else None,
+            round(float(cpu_load), 1) if cpu_load is not None else None,
+            round(float(gpu),      1) if gpu      is not None else None,
+            round(float(gpu_load), 1) if gpu_load is not None else None,
             gpu_name,
         )
     except Exception:
-        return None, None, None
+        return None, None, None, None, ""
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -240,7 +250,6 @@ def make_primary(device: str, monitors: list) -> bool:
     Make the given monitor the primary display.
     Shifts all other monitors so the new primary sits at (0, 0).
     """
-    # Find the target monitor's current position
     target = next((m for m in monitors if m["device"] == device), None)
     if target is None:
         return False
@@ -248,7 +257,6 @@ def make_primary(device: str, monitors: list) -> bool:
     offset_x = target["left"]
     offset_y = target["top"]
 
-    # Apply new settings for every active monitor
     for mon in monitors:
         dm = DEVMODE()
         dm.dmSize   = ctypes.sizeof(DEVMODE)
@@ -267,7 +275,6 @@ def make_primary(device: str, monitors: list) -> bool:
             mon["device"], ctypes.byref(dm), None, flags, None
         )
 
-    # Commit all pending changes
     result = ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
     return result == DISP_CHANGE_SUCCESSFUL
 
@@ -386,6 +393,55 @@ def start_screensaver():
     except (FileNotFoundError, OSError):
         messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
 
+# ── Autostart (Start with Windows) ────────────────────────────────────────────
+_AUTOSTART_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_AUTOSTART_NAME = "MonitorManager"
+
+
+def _app_launch_cmd() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+
+def get_autostart() -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as key:
+            winreg.QueryValueEx(key, _AUTOSTART_NAME)
+            return True
+    except OSError:
+        return False
+
+
+def set_autostart(enable: bool):
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE
+    ) as key:
+        if enable:
+            winreg.SetValueEx(
+                key, _AUTOSTART_NAME, 0, winreg.REG_SZ,
+                f"{_app_launch_cmd()} --minimized"
+            )
+        else:
+            try:
+                winreg.DeleteValue(key, _AUTOSTART_NAME)
+            except OSError:
+                pass
+
+# ── System tray icon ───────────────────────────────────────────────────────────
+def _create_tray_image() -> "Image.Image":
+    size = 64
+    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d    = ImageDraw.Draw(img)
+    # Monitor bezel
+    d.rectangle([4, 10, 60, 46], fill="#89b4fa", outline="#cdd6f4", width=3)
+    # Screen area
+    d.rectangle([9, 15, 55, 41], fill="#1e1e2e")
+    # Stand
+    d.rectangle([29, 46, 35, 54], fill="#cdd6f4")
+    d.rectangle([20, 54, 44, 58], fill="#cdd6f4")
+    return img
+
 # ── Theme ───────────────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
 SURFACE = "#313244"
@@ -416,9 +472,16 @@ class App(tk.Tk):
         self.title("Monitor Manager")
         self.configure(bg=BG)
         self.resizable(False, False)
+        self._tray_icon = None
         self._build_ui()
         self.refresh()
         self._schedule_temp_update()
+        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+        if _TRAY_AVAILABLE:
+            self._start_tray()
+        # Start minimized to tray if launched with --minimized flag
+        if "--minimized" in sys.argv:
+            self.after(150, self.withdraw)
 
     def _build_ui(self):
         # Header
@@ -427,7 +490,7 @@ class App(tk.Tk):
         tk.Label(hdr, text="Monitor Manager",
                  font=("Segoe UI", 14, "bold"), bg=BG, fg=TEXT).pack(side="left")
 
-        # Temperature bar
+        # Temperature / usage bar
         temp_bar = tk.Frame(self, bg=SURFACE, padx=16, pady=10)
         temp_bar.pack(fill="x", padx=16)
 
@@ -466,14 +529,49 @@ class App(tk.Tk):
         make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="right")
         self._refresh_hdr_btn()
 
+    # ── System tray ──────────────────────────────────────────────────────────
+    def _start_tray(self):
+        img  = _create_tray_image()
+        menu = pystray.Menu(
+            pystray.MenuItem("Show Monitor Manager", self._show_from_tray, default=True),
+            pystray.MenuItem(
+                "Start with Windows",
+                self._toggle_autostart,
+                checked=lambda item: get_autostart(),
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Exit", self._quit_app),
+        )
+        self._tray_icon = pystray.Icon("MonitorManager", img, "Monitor Manager", menu)
+        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+
+    def _hide_to_tray(self):
+        self.withdraw()
+
+    def _show_from_tray(self, icon=None, item=None):
+        self.after(0, self._do_show)
+
+    def _do_show(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _toggle_autostart(self, icon=None, item=None):
+        set_autostart(not get_autostart())
+
+    def _quit_app(self, icon=None, item=None):
+        if self._tray_icon:
+            self._tray_icon.stop()
+        self.after(0, self.destroy)
+
     # ── Temperature polling (background thread) ──────────────────────────────
     def _schedule_temp_update(self):
         threading.Thread(target=self._fetch_temps, daemon=True).start()
 
     def _fetch_temps(self):
-        cpu, gpu, gpu_name = get_temperatures()
+        cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name = get_temperatures()
         hdr = get_hdr_state()
-        self.after(0, lambda: self._apply_temps(cpu, gpu, gpu_name))
+        self.after(0, lambda: self._apply_temps(cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name))
         self.after(0, lambda: self._apply_hdr_color(hdr))
         self.after(3000, self._schedule_temp_update)
 
@@ -486,12 +584,19 @@ class App(tk.Tk):
 
     def _on_toggle_hdr(self):
         toggle_hdr()
-        # Re-read state after a short delay for the OS to apply the change
         self.after(600, self._refresh_hdr_btn)
 
-    def _apply_temps(self, cpu, gpu, gpu_name):
-        self._cpu_lbl.config(text=f"{cpu:.0f} °C" if cpu is not None else "N/A")
-        self._gpu_lbl.config(text=f"{gpu:.0f} °C" if gpu is not None else "N/A")
+    def _apply_temps(self, cpu_temp, cpu_load, gpu_temp, gpu_load, gpu_name):
+        cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
+        if cpu_load is not None:
+            cpu_text += f"  ·  {cpu_load:.0f}%"
+        self._cpu_lbl.config(text=cpu_text)
+
+        gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
+        if gpu_load is not None:
+            gpu_text += f"  ·  {gpu_load:.0f}%"
+        self._gpu_lbl.config(text=gpu_text)
+
         self._gpu_name_lbl.config(text=gpu_name or "")
 
     # ── Monitor cards ────────────────────────────────────────────────────────

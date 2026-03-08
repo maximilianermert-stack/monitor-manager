@@ -30,8 +30,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install PyInstaller
-        run: pip install pyinstaller
+      - name: Install PyInstaller and dependencies
+        run: pip install pyinstaller pystray Pillow
 
       - name: Build TempReader (C# / LHM)
         run: |
