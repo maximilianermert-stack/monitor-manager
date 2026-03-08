@@ -99,13 +99,29 @@ def _run(cmd, timeout=6):
 
 
 def get_cpu_temp():
-    """CPU package temperature via WMI thermal zones (all brands)."""
-    out = _run([
-        "powershell", "-NoProfile", "-NonInteractive", "-Command",
-        "$t=(Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
-        "-ErrorAction SilentlyContinue).CurrentTemperature;"
-        "if($t){($t|Measure-Object -Maximum).Maximum/10-273.15}"
-    ])
+    """CPU temperature — tries two WMI methods, returns the highest valid reading."""
+    script = (
+        "$results = @();"
+
+        # Method 1: ACPI thermal zones (works on many laptops + some desktops)
+        "$acpi = Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
+        "-ErrorAction SilentlyContinue;"
+        "if ($acpi) {"
+        "  $max = ($acpi.CurrentTemperature | Measure-Object -Maximum).Maximum;"
+        "  if ($max -gt 0) { $results += [math]::Round($max / 10 - 273.15, 1) }"
+        "};"
+
+        # Method 2: Windows Performance Counter thermal zones (Windows 10/11 desktops)
+        "$perf = Get-WmiObject Win32_PerfFormattedData_Counters_ThermalZoneInformation "
+        "-ErrorAction SilentlyContinue;"
+        "if ($perf) {"
+        "  $max = ($perf.Temperature | Measure-Object -Maximum).Maximum;"
+        "  if ($max -gt 273) { $results += [math]::Round($max - 273.15, 1) }"
+        "};"
+
+        "if ($results) { ($results | Measure-Object -Maximum).Maximum }"
+    )
+    out = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script])
     if out:
         try:
             t = round(float(out), 1)
