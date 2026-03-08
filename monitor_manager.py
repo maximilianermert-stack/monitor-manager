@@ -26,6 +26,7 @@ DM_PELSWIDTH                = 0x00080000
 DM_PELSHEIGHT               = 0x00100000
 CDS_UPDATEREGISTRY          = 0x00000001
 CDS_NORESET                 = 0x10000000
+CDS_SET_PRIMARY             = 0x00000010
 DISP_CHANGE_SUCCESSFUL      = 0
 
 DISPLAY_DEVICE_ACTIVE       = 0x00000001
@@ -308,6 +309,43 @@ def enable_monitor(device: str, active_monitors: list) -> bool:
     return result == DISP_CHANGE_SUCCESSFUL
 
 
+def make_primary(device: str, monitors: list) -> bool:
+    """
+    Make the given monitor the primary display.
+    Shifts all other monitors so the new primary sits at (0, 0).
+    """
+    # Find the target monitor's current position
+    target = next((m for m in monitors if m["device"] == device), None)
+    if target is None:
+        return False
+
+    offset_x = target["left"]
+    offset_y = target["top"]
+
+    # Apply new settings for every active monitor
+    for mon in monitors:
+        dm = DEVMODE()
+        dm.dmSize   = ctypes.sizeof(DEVMODE)
+        dm.dmFields = DM_POSITION | DM_PELSWIDTH | DM_PELSHEIGHT
+
+        dm.dmPelsWidth  = mon["width"]
+        dm.dmPelsHeight = mon["height"]
+        dm.dmPositionX  = mon["left"] - offset_x
+        dm.dmPositionY  = mon["top"]  - offset_y
+
+        flags = CDS_UPDATEREGISTRY | CDS_NORESET
+        if mon["device"] == device:
+            flags |= CDS_SET_PRIMARY
+
+        ctypes.windll.user32.ChangeDisplaySettingsExW(
+            mon["device"], ctypes.byref(dm), None, flags, None
+        )
+
+    # Commit all pending changes
+    result = ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
+    return result == DISP_CHANGE_SUCCESSFUL
+
+
 def start_screensaver():
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
@@ -443,7 +481,12 @@ class App(tk.Tk):
 
         make_btn(top, "Disable",
                  lambda d=mon["device"], p=mon["primary"]: self._on_disable(d, p),
-                 YELLOW).pack(side="right")
+                 YELLOW).pack(side="right", padx=(4, 0))
+
+        if not mon["primary"]:
+            make_btn(top, "★ Make Primary",
+                     lambda d=mon["device"]: self._on_make_primary(d),
+                     GREEN).pack(side="right")
 
         info = (
             f"{mon['width']} × {mon['height']}    "
@@ -483,6 +526,13 @@ class App(tk.Tk):
             self.refresh()
         else:
             messagebox.showerror("Monitor Manager", f"Could not enable {device}.")
+
+    def _on_make_primary(self, device: str):
+        monitors = get_active_monitors()
+        if make_primary(device, monitors):
+            self.refresh()
+        else:
+            messagebox.showerror("Monitor Manager", f"Could not set {device} as primary.")
 
 
 if __name__ == "__main__":
