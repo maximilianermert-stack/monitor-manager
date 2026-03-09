@@ -5,7 +5,7 @@ Requires administrator privileges for full hardware access.
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 import ctypes
 import ctypes.wintypes
 import winreg
@@ -32,6 +32,7 @@ ENUM_CURRENT_SETTINGS       = 0xFFFFFFFF
 DM_POSITION                 = 0x00000020
 DM_PELSWIDTH                = 0x00080000
 DM_PELSHEIGHT               = 0x00100000
+DM_DISPLAYFREQUENCY         = 0x00400000
 CDS_UPDATEREGISTRY          = 0x00000001
 CDS_NORESET                 = 0x10000000
 CDS_SET_PRIMARY             = 0x00000010
@@ -305,6 +306,38 @@ def make_primary(device: str, monitors: list) -> bool:
         )
 
     result = ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
+    return result == DISP_CHANGE_SUCCESSFUL
+
+
+# ── Refresh rate helpers ───────────────────────────────────────────────────────
+def get_available_refresh_rates(device: str) -> list:
+    rates = set()
+    dm = DEVMODE()
+    dm.dmSize = ctypes.sizeof(DEVMODE)
+    i = 0
+    while ctypes.windll.user32.EnumDisplaySettingsW(device, i, ctypes.byref(dm)):
+        if dm.dmDisplayFrequency > 1:
+            rates.add(int(dm.dmDisplayFrequency))
+        i += 1
+    return sorted(rates)
+
+
+def get_current_refresh_rate(device: str) -> int:
+    dm = DEVMODE()
+    dm.dmSize = ctypes.sizeof(DEVMODE)
+    ctypes.windll.user32.EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, ctypes.byref(dm))
+    return int(dm.dmDisplayFrequency)
+
+
+def set_refresh_rate(device: str, hz: int) -> bool:
+    dm = DEVMODE()
+    dm.dmSize = ctypes.sizeof(DEVMODE)
+    ctypes.windll.user32.EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, ctypes.byref(dm))
+    dm.dmFields = DM_DISPLAYFREQUENCY
+    dm.dmDisplayFrequency = hz
+    result = ctypes.windll.user32.ChangeDisplaySettingsExW(
+        device, ctypes.byref(dm), None, CDS_UPDATEREGISTRY, None
+    )
     return result == DISP_CHANGE_SUCCESSFUL
 
 
@@ -590,6 +623,18 @@ class App(tk.Tk):
         menu.add_command(label="Second screen only",
                          command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/external"]))
         menu.add_separator()
+
+        # FPS Limit (refresh rate) cascade
+        self._rate_menu = tk.Menu(
+            menu, tearoff=0,
+            bg=SURFACE, fg=TEXT,
+            activebackground=OVERLAY, activeforeground=TEXT,
+            font=("Segoe UI", 10), bd=0,
+        )
+        menu.add_cascade(label="FPS Limit", menu=self._rate_menu)
+        menu.config(postcommand=self._rebuild_rate_menu)
+
+        menu.add_separator()
         menu.add_command(label="Open Display Settings",
                          command=lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
         menu.add_separator()
@@ -599,6 +644,35 @@ class App(tk.Tk):
 
         misc_btn.config(menu=menu)
         misc_btn.pack(side="left")
+
+    def _rebuild_rate_menu(self):
+        self._rate_menu.delete(0, "end")
+        monitors = get_active_monitors()
+        if not monitors:
+            return
+        primary = next((m for m in monitors if m["primary"]), monitors[0])
+        device  = primary["device"]
+        current = get_current_refresh_rate(device)
+        for hz in get_available_refresh_rates(device):
+            label = f"✓  {hz} Hz" if hz == current else f"    {hz} Hz"
+            self._rate_menu.add_command(
+                label=label,
+                command=lambda h=hz: self._apply_rate(device, h),
+            )
+        self._rate_menu.add_separator()
+        self._rate_menu.add_command(label="    Custom…", command=lambda: self._custom_rate(device))
+
+    def _apply_rate(self, device: str, hz: int):
+        if not set_refresh_rate(device, hz):
+            messagebox.showerror("Monitor Manager", f"Could not set {hz} Hz on {device}.")
+
+    def _custom_rate(self, device: str):
+        hz = simpledialog.askinteger(
+            "FPS Limit", "Enter refresh rate (Hz):",
+            parent=self, minvalue=1, maxvalue=500,
+        )
+        if hz:
+            self._apply_rate(device, hz)
 
     # ── System tray ──────────────────────────────────────────────────────────
     def _start_tray(self):
