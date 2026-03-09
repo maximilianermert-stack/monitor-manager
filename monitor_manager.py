@@ -501,7 +501,8 @@ class App(tk.Tk):
         self.title("Monitor Manager")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self._tray_icon = None
+        self._tray_icon    = None
+        self._autostart_var = None   # set in _build_ui after tk.BooleanVar is available
         self._build_ui()
         self.refresh()
         self._schedule_temp_update()
@@ -555,10 +556,49 @@ class App(tk.Tk):
         make_btn(bar, "Screensaver",  start_screensaver, BLUE).pack(side="left", padx=(0, 8))
 
         self._hdr_btn = make_btn(bar, "HDR", self._on_toggle_hdr, RED)
-        self._hdr_btn.pack(side="left")
+        self._hdr_btn.pack(side="left", padx=(0, 8))
+
+        self._build_misc_menu(bar)
 
         make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="right")
         self._refresh_hdr_btn()
+
+    def _build_misc_menu(self, bar):
+        self._autostart_var = tk.BooleanVar(value=get_autostart())
+
+        misc_btn = tk.Menubutton(
+            bar, text="Misc ▾",
+            bg=SURFACE, fg=TEXT,
+            activebackground=OVERLAY, activeforeground=TEXT,
+            font=("Segoe UI", 10), relief="flat",
+            padx=12, pady=6, cursor="hand2", bd=0,
+        )
+
+        menu = tk.Menu(
+            misc_btn, tearoff=0,
+            bg=SURFACE, fg=TEXT,
+            activebackground=OVERLAY, activeforeground=TEXT,
+            font=("Segoe UI", 10), bd=0,
+        )
+
+        menu.add_command(label="Extend displays",
+                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/extend"]))
+        menu.add_command(label="Duplicate displays",
+                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/clone"]))
+        menu.add_command(label="PC screen only",
+                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/internal"]))
+        menu.add_command(label="Second screen only",
+                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/external"]))
+        menu.add_separator()
+        menu.add_command(label="Open Display Settings",
+                         command=lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
+        menu.add_separator()
+        menu.add_checkbutton(label="Start with Windows",
+                             variable=self._autostart_var,
+                             command=self._on_toggle_autostart)
+
+        misc_btn.config(menu=menu)
+        misc_btn.pack(side="left")
 
     # ── System tray ──────────────────────────────────────────────────────────
     def _start_tray(self):
@@ -587,8 +627,15 @@ class App(tk.Tk):
         self.lift()
         self.focus_force()
 
+    def _on_toggle_autostart(self):
+        set_autostart(self._autostart_var.get())
+
     def _toggle_autostart(self, icon=None, item=None):
-        set_autostart(not get_autostart())
+        """Called from tray menu."""
+        new = not get_autostart()
+        set_autostart(new)
+        if self._autostart_var is not None:
+            self._autostart_var.set(new)
 
     def _quit_app(self, icon=None, item=None):
         if self._tray_icon:
