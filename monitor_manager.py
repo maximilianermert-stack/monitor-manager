@@ -455,6 +455,33 @@ def start_screensaver():
     except (FileNotFoundError, OSError):
         messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
 
+# ── GPU software launchers ────────────────────────────────────────────────────
+def _try_open(candidates: list) -> bool:
+    for path in candidates:
+        p = os.path.expandvars(path)
+        if os.path.exists(p):
+            subprocess.Popen([p])
+            return True
+    return False
+
+
+def open_nvidia_app():
+    return _try_open([
+        r"%LOCALAPPDATA%\NVIDIA\NvBackend\ApplicationOntology\data\nvidia-app.exe",
+        r"C:\Program Files\NVIDIA Corporation\NVIDIA app\CEF\nvidia-app.exe",
+        r"C:\Program Files\NVIDIA Corporation\NVIDIA GeForce Experience\NVIDIA GeForce Experience.exe",
+        r"C:\Program Files\NVIDIA Corporation\Control Panel Client\nvcplui.exe",
+    ])
+
+
+def open_amd_app():
+    return _try_open([
+        r"C:\Program Files\AMD\CNext\CNext\RadeonSoftware.exe",
+        r"C:\Program Files (x86)\AMD\CNext\CNext\RadeonSoftware.exe",
+        r"C:\Program Files\AMD\CNext\CNext\AMDRadeonSoftware.exe",
+    ])
+
+
 # ── Autostart (Start with Windows) ────────────────────────────────────────────
 _AUTOSTART_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _AUTOSTART_NAME = "MonitorManager"
@@ -637,6 +664,10 @@ class App(tk.Tk):
         menu.add_separator()
         menu.add_command(label="Open Display Settings",
                          command=lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
+        menu.add_command(label="Open NVIDIA App",
+                         command=self._open_nvidia)
+        menu.add_command(label="Open AMD Software",
+                         command=self._open_amd)
         menu.add_separator()
         menu.add_checkbutton(label="Start with Windows",
                              variable=self._autostart_var,
@@ -700,6 +731,14 @@ class App(tk.Tk):
         self.deiconify()
         self.lift()
         self.focus_force()
+
+    def _open_nvidia(self):
+        if not open_nvidia_app():
+            messagebox.showinfo("Monitor Manager", "NVIDIA app not found.\nInstall NVIDIA App or GeForce Experience.")
+
+    def _open_amd(self):
+        if not open_amd_app():
+            messagebox.showinfo("Monitor Manager", "AMD Software not found.\nInstall AMD Software: Adrenalin Edition.")
 
     def _on_toggle_autostart(self):
         set_autostart(self._autostart_var.get())
