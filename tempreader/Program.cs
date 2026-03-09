@@ -9,13 +9,15 @@ var computer = new Computer
 };
 computer.Open();
 
-float? cpuTemp  = null;
-float? cpuLoad  = null;
-float? cpuPower = null;
-float? gpuTemp  = null;
-float? gpuLoad  = null;
-float? gpuPower = null;
-string gpuName  = "";
+float? cpuTemp     = null;
+float? cpuLoad     = null;
+float? cpuPower    = null;
+float? gpuTemp     = null;
+float? gpuLoad     = null;
+float? gpuPower    = null;
+float? gpuMemUsed  = null;  // MB
+float? gpuMemTotal = null;  // MB
+string gpuName     = "";
 
 foreach (var hw in computer.Hardware)
 {
@@ -59,6 +61,13 @@ foreach (var hw in computer.Hardware)
                 gpuLoad = sensor.Value;
             else if (sensor.SensorType == SensorType.Power && gpuPower == null)
                 gpuPower = sensor.Value;
+            else if (sensor.SensorType == SensorType.SmallData)
+            {
+                if (gpuMemUsed  == null && sensor.Name.Contains("Memory Used"))
+                    gpuMemUsed  = sensor.Value;
+                else if (gpuMemTotal == null && sensor.Name.Contains("Memory Total"))
+                    gpuMemTotal = sensor.Value;
+            }
         }
     }
 }
@@ -67,11 +76,13 @@ computer.Close();
 
 Console.WriteLine(JsonConvert.SerializeObject(new
 {
-    cpu       = cpuTemp,
-    cpu_load  = cpuLoad,
-    cpu_power = cpuPower,
-    gpu       = gpuTemp,
-    gpu_load  = gpuLoad,
-    gpu_power = gpuPower,
-    gpu_name  = gpuName,
+    cpu           = cpuTemp,
+    cpu_load      = cpuLoad,
+    cpu_power     = cpuPower,
+    gpu           = gpuTemp,
+    gpu_load      = gpuLoad,
+    gpu_power     = gpuPower,
+    gpu_mem_used  = gpuMemUsed,
+    gpu_mem_total = gpuMemTotal,
+    gpu_name      = gpuName,
 }));

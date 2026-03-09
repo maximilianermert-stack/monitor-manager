@@ -97,6 +97,29 @@ class DEVMODE(ctypes.Structure):
         ("dmDisplayFrequency",   ctypes.c_ulong),
     ]
 
+# ── System RAM via Windows API ────────────────────────────────────────────────
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength",                ctypes.c_ulong),
+        ("dwMemoryLoad",            ctypes.c_ulong),
+        ("ullTotalPhys",            ctypes.c_ulonglong),
+        ("ullAvailPhys",            ctypes.c_ulonglong),
+        ("ullTotalPageFile",        ctypes.c_ulonglong),
+        ("ullAvailPageFile",        ctypes.c_ulonglong),
+        ("ullTotalVirtual",         ctypes.c_ulonglong),
+        ("ullAvailVirtual",         ctypes.c_ulonglong),
+        ("sullAvailExtendedVirtual",ctypes.c_ulonglong),
+    ]
+
+def get_ram_usage():
+    """Returns (used_gb, total_gb) for system RAM."""
+    mem = MEMORYSTATUSEX()
+    mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+    total = mem.ullTotalPhys / (1024 ** 3)
+    used  = (mem.ullTotalPhys - mem.ullAvailPhys) / (1024 ** 3)
+    return round(used, 1), round(total)
+
 # ── Temperature reading via bundled TempReader.exe (LHM / C#) ─────────────────
 
 def _tempreader_path():
@@ -106,7 +129,7 @@ def _tempreader_path():
 
 def get_temperatures():
     """
-    Returns (cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_name).
+    Returns (cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_mem_used_mb, gpu_mem_total_mb).
     Values are float or None. Calls the bundled TempReader.exe (LibreHardwareMonitor).
     """
     try:
@@ -117,21 +140,25 @@ def get_temperatures():
         )
         data      = json.loads(result.stdout.strip())
         cpu       = data.get("cpu")
-        cpu_load  = data.get("cpu_load")
-        cpu_power = data.get("cpu_power")
-        gpu       = data.get("gpu")
-        gpu_load  = data.get("gpu_load")
-        gpu_power = data.get("gpu_power")
+        cpu_load      = data.get("cpu_load")
+        cpu_power     = data.get("cpu_power")
+        gpu           = data.get("gpu")
+        gpu_load      = data.get("gpu_load")
+        gpu_power     = data.get("gpu_power")
+        gpu_mem_used  = data.get("gpu_mem_used")
+        gpu_mem_total = data.get("gpu_mem_total")
         return (
-            round(float(cpu),       1) if cpu       is not None else None,
-            round(float(cpu_load),  1) if cpu_load  is not None else None,
-            round(float(cpu_power), 1) if cpu_power is not None else None,
-            round(float(gpu),       1) if gpu       is not None else None,
-            round(float(gpu_load),  1) if gpu_load  is not None else None,
-            round(float(gpu_power), 1) if gpu_power is not None else None,
+            round(float(cpu),           1) if cpu           is not None else None,
+            round(float(cpu_load),      1) if cpu_load      is not None else None,
+            round(float(cpu_power),     1) if cpu_power     is not None else None,
+            round(float(gpu),           1) if gpu           is not None else None,
+            round(float(gpu_load),      1) if gpu_load      is not None else None,
+            round(float(gpu_power),     1) if gpu_power     is not None else None,
+            round(float(gpu_mem_used),  0) if gpu_mem_used  is not None else None,
+            round(float(gpu_mem_total), 0) if gpu_mem_total is not None else None,
         )
     except Exception:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -573,9 +600,14 @@ class App(tk.Tk):
         threading.Thread(target=self._fetch_temps, daemon=True).start()
 
     def _fetch_temps(self):
-        cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power = get_temperatures()
+        cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total = get_temperatures()
+        ram_used, ram_total = get_ram_usage()
         hdr = get_hdr_state()
-        self.after(0, lambda: self._apply_temps(cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power))
+        self.after(0, lambda: self._apply_temps(
+            cpu_temp, cpu_load, cpu_power,
+            gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
+            ram_used, ram_total,
+        ))
         self.after(0, lambda: self._apply_hdr_color(hdr))
         self.after(3000, self._schedule_temp_update)
 
@@ -590,20 +622,23 @@ class App(tk.Tk):
         toggle_hdr()
         self.after(600, self._refresh_hdr_btn)
 
-    def _apply_temps(self, cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power):
+    def _apply_temps(self, cpu_temp, cpu_load, cpu_power,
+                     gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
+                     ram_used, ram_total):
         cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
         if cpu_load is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
         self._cpu_lbl.config(text=cpu_text)
 
         gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
         if gpu_load is not None: gpu_text += f"  ·  {gpu_load:.0f}%"
+        if gpu_mem_used is not None and gpu_mem_total is not None:
+            gpu_text += f"  ·  {gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB"
         self._gpu_lbl.config(text=gpu_text)
 
-        parts = [p for p in (cpu_power, gpu_power) if p is not None]
-        if parts:
-            self._pwr_lbl.config(text=f"{sum(parts):.0f} W")
-        else:
-            self._pwr_lbl.config(text="N/A")
+        pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
+        pwr_text  = f"{sum(pwr_parts):.0f} W" if pwr_parts else "N/A"
+        pwr_text += f"  ·  {ram_used:.1f}/{ram_total} GB"
+        self._pwr_lbl.config(text=pwr_text)
 
     # ── Monitor cards ────────────────────────────────────────────────────────
     def refresh(self):
