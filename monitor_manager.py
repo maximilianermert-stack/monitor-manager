@@ -533,7 +533,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("Monitor Manager")
         self.configure(bg=BG)
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(560, 280)
         self._tray_icon    = None
         self._autostart_var = None   # set in _build_ui after tk.BooleanVar is available
         self._build_ui()
@@ -577,7 +578,7 @@ class App(tk.Tk):
 
         # Monitor list
         self.list_frame = tk.Frame(self, bg=BG, padx=16)
-        self.list_frame.pack(fill="both", pady=(12, 0))
+        self.list_frame.pack(fill="both", expand=True, pady=(12, 0))
 
         # Divider
         tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x", padx=16, pady=(8, 0))
@@ -593,7 +594,7 @@ class App(tk.Tk):
 
         self._build_misc_menu(bar)
 
-        make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="right")
+        make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="left", padx=(8, 0))
         self._refresh_hdr_btn()
 
     def _build_misc_menu(self, bar):
@@ -605,6 +606,7 @@ class App(tk.Tk):
             activebackground=OVERLAY, activeforeground=TEXT,
             font=("Segoe UI", 10), relief="flat",
             padx=12, pady=6, cursor="hand2", bd=0,
+            indicatoron=False,
         )
 
         menu = tk.Menu(
