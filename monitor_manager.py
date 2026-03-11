@@ -456,39 +456,43 @@ def start_screensaver():
         messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
 
 # ── Autostart (Start with Windows) ────────────────────────────────────────────
-_AUTOSTART_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
-_AUTOSTART_NAME = "MonitorManager"
+# Uses Task Scheduler with "run with highest privileges" so the app
+# starts elevated at login — the HKCU\Run key doesn't support elevation.
+_TASK_NAME = "MonitorManager"
 
 
 def _app_launch_cmd() -> str:
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}"'
-    return f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+        return sys.executable
+    return f'{sys.executable} "{os.path.abspath(__file__)}"'
 
 
 def get_autostart() -> bool:
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY) as key:
-            winreg.QueryValueEx(key, _AUTOSTART_NAME)
-            return True
-    except OSError:
-        return False
+    result = subprocess.run(
+        ["schtasks", "/query", "/tn", _TASK_NAME],
+        capture_output=True, creationflags=CREATE_NO_WINDOW,
+    )
+    return result.returncode == 0
 
 
 def set_autostart(enable: bool):
-    with winreg.OpenKey(
-        winreg.HKEY_CURRENT_USER, _AUTOSTART_KEY, 0, winreg.KEY_SET_VALUE
-    ) as key:
-        if enable:
-            winreg.SetValueEx(
-                key, _AUTOSTART_NAME, 0, winreg.REG_SZ,
-                f"{_app_launch_cmd()} --minimized"
-            )
-        else:
-            try:
-                winreg.DeleteValue(key, _AUTOSTART_NAME)
-            except OSError:
-                pass
+    if enable:
+        subprocess.run(
+            [
+                "schtasks", "/create",
+                "/tn", _TASK_NAME,
+                "/tr", f"{_app_launch_cmd()} --minimized",
+                "/sc", "onlogon",
+                "/rl", "highest",
+                "/f",
+            ],
+            capture_output=True, creationflags=CREATE_NO_WINDOW,
+        )
+    else:
+        subprocess.run(
+            ["schtasks", "/delete", "/tn", _TASK_NAME, "/f"],
+            capture_output=True, creationflags=CREATE_NO_WINDOW,
+        )
 
 # ── System tray icon ───────────────────────────────────────────────────────────
 def _create_tray_image() -> "Image.Image":
