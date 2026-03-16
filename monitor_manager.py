@@ -494,6 +494,72 @@ def set_autostart(enable: bool):
             capture_output=True, creationflags=CREATE_NO_WINDOW,
         )
 
+# ── RTSS FPS cap ──────────────────────────────────────────────────────────────
+def _find_rtss_path() -> str:
+    for key_path in [
+        r"SOFTWARE\WOW6432Node\Unwinder\RTSS",
+        r"SOFTWARE\Unwinder\RTSS",
+    ]:
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                path, _ = winreg.QueryValueEx(key, "InstallPath")
+                if os.path.exists(path):
+                    return path
+        except OSError:
+            pass
+    default = r"C:\Program Files (x86)\RivaTuner Statistics Server"
+    return default if os.path.exists(default) else ""
+
+
+def _rtss_global_profile() -> str:
+    rtss = _find_rtss_path()
+    return os.path.join(rtss, "Profiles", "Global") if rtss else ""
+
+
+def get_rtss_fps_limit() -> int:
+    profile = _rtss_global_profile()
+    if not profile or not os.path.exists(profile):
+        return 0
+    try:
+        with open(profile, "r") as f:
+            for line in f:
+                if line.startswith("FramerateLimit="):
+                    return int(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    return 0
+
+
+def set_rtss_fps_limit(fps: int) -> bool:
+    profile = _rtss_global_profile()
+    if not profile or not os.path.exists(profile):
+        return False
+    try:
+        with open(profile, "r") as f:
+            lines = f.readlines()
+        us = round(1_000_000 / fps) if fps > 0 else 0
+        new_lines = []
+        found_fps, found_us = False, False
+        for line in lines:
+            if line.startswith("FramerateLimit="):
+                new_lines.append(f"FramerateLimit={fps}\n")
+                found_fps = True
+            elif line.startswith("FramerateLimitUs="):
+                new_lines.append(f"FramerateLimitUs={us}\n")
+                found_us = True
+            else:
+                new_lines.append(line)
+        if not found_fps:
+            new_lines.append(f"FramerateLimit={fps}\n")
+        if not found_us:
+            new_lines.append(f"FramerateLimitUs={us}\n")
+        with open(profile, "w") as f:
+            f.writelines(new_lines)
+        return True
+    except Exception:
+        return False
+
+
 # ── System tray icon ───────────────────────────────────────────────────────────
 def _create_tray_image() -> "Image.Image":
     size = 64
@@ -530,6 +596,80 @@ def make_btn(parent, label, cmd, fg=TEXT):
         font=("Segoe UI", 10), relief="flat",
         padx=12, pady=6, cursor="hand2", bd=0,
     )
+
+# ── RTSS FPS cap dialog ────────────────────────────────────────────────────────
+class RTSSCapDialog(tk.Toplevel):
+    _PRESETS = [0, 30, 60, 120, 144, 165, 240]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("RTSS FPS Cap")
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        self.grab_set()
+
+        current = get_rtss_fps_limit()
+
+        tk.Label(self, text="Global FPS Cap (RTSS)",
+                 font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT,
+                 padx=20, pady=14).pack()
+
+        # Preset buttons
+        btn_row = tk.Frame(self, bg=BG, padx=20)
+        btn_row.pack(fill="x")
+        for fps in self._PRESETS:
+            label  = "Unlimited" if fps == 0 else f"{fps}"
+            is_cur = fps == current
+            fg     = GREEN if is_cur else TEXT
+            tk.Button(
+                btn_row, text=label, width=8,
+                command=lambda v=fps: self._apply(v),
+                bg=SURFACE, fg=fg,
+                activebackground=OVERLAY, activeforeground=fg,
+                font=("Segoe UI", 10), relief="flat",
+                padx=8, pady=6, cursor="hand2", bd=0,
+            ).pack(side="left", padx=(0, 6), pady=(0, 12))
+
+        # Custom entry
+        row = tk.Frame(self, bg=BG, padx=20, pady=4)
+        row.pack(fill="x")
+        tk.Label(row, text="Custom:", font=("Segoe UI", 10),
+                 bg=BG, fg=SUBTEXT).pack(side="left")
+        self._entry = tk.Entry(
+            row, width=7,
+            bg=SURFACE, fg=TEXT, insertbackground=TEXT,
+            font=("Segoe UI", 10), relief="flat", bd=4,
+        )
+        self._entry.pack(side="left", padx=(8, 8))
+        if current not in self._PRESETS and current > 0:
+            self._entry.insert(0, str(current))
+        tk.Button(
+            row, text="Set",
+            command=self._apply_custom,
+            bg=SURFACE, fg=BLUE,
+            activebackground=OVERLAY, activeforeground=BLUE,
+            font=("Segoe UI", 10), relief="flat",
+            padx=10, pady=5, cursor="hand2", bd=0,
+        ).pack(side="left")
+
+        tk.Label(self, text=f"Current: {'Unlimited' if current == 0 else f'{current} FPS'}",
+                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT, pady=10).pack()
+
+    def _apply(self, fps: int):
+        if set_rtss_fps_limit(fps):
+            self.destroy()
+        else:
+            messagebox.showerror("Monitor Manager", "Could not write RTSS profile.", parent=self)
+
+    def _apply_custom(self):
+        try:
+            fps = int(self._entry.get())
+            if fps < 0:
+                raise ValueError
+            self._apply(fps)
+        except ValueError:
+            messagebox.showerror("Monitor Manager", "Enter a valid number (0 = unlimited).", parent=self)
+
 
 # ── Application ─────────────────────────────────────────────────────────────────
 class App(tk.Tk):
@@ -637,7 +777,8 @@ class App(tk.Tk):
             activebackground=OVERLAY, activeforeground=TEXT,
             font=("Segoe UI", 10), bd=0,
         )
-        menu.add_cascade(label="FPS Limit", menu=self._rate_menu)
+        menu.add_cascade(label="Refresh Rate", menu=self._rate_menu)
+        menu.add_command(label="RTSS FPS Cap…", command=self._on_rtss_cap)
         menu.config(postcommand=self._rebuild_rate_menu)
 
         menu.add_separator()
@@ -674,11 +815,18 @@ class App(tk.Tk):
 
     def _custom_rate(self, device: str):
         hz = simpledialog.askinteger(
-            "FPS Limit", "Enter refresh rate (Hz):",
+            "Refresh Rate", "Enter refresh rate (Hz):",
             parent=self, minvalue=1, maxvalue=500,
         )
         if hz:
             self._apply_rate(device, hz)
+
+    def _on_rtss_cap(self):
+        if not _find_rtss_path():
+            messagebox.showerror("Monitor Manager",
+                                 "RTSS not found.\nMake sure RivaTuner Statistics Server is installed.")
+            return
+        RTSSCapDialog(self)
 
     # ── System tray ──────────────────────────────────────────────────────────
     def _start_tray(self):
