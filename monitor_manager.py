@@ -622,6 +622,22 @@ _REG_RENDER               = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevice
 _PKEY_FriendlyName        = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
 
 
+def _decode_propvariant(data) -> str:
+    """Extract a string from a PROPVARIANT stored as REG_BINARY.
+    VT_LPWSTR (0x1F): 8-byte header, then UTF-16LE string."""
+    if isinstance(data, str):
+        return data  # already a plain REG_SZ on some systems
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 10:
+        return ""
+    vt = int.from_bytes(data[0:2], "little")
+    if vt == 31:  # VT_LPWSTR
+        try:
+            return data[8:].decode("utf-16-le").rstrip("\x00")
+        except Exception:
+            return ""
+    return ""
+
+
 def get_audio_outputs() -> list:
     """Return [(friendly_name, device_id), ...] for all active render endpoints."""
     devices = []
@@ -640,7 +656,8 @@ def get_audio_outputs() -> list:
                     try:
                         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
                                             f"{_REG_RENDER}\\{guid}\\Properties") as pk:
-                            name, _ = winreg.QueryValueEx(pk, _PKEY_FriendlyName)
+                            raw, _ = winreg.QueryValueEx(pk, _PKEY_FriendlyName)
+                            name   = _decode_propvariant(raw) or guid
                     except OSError:
                         name = guid
                     devices.append((name, f"{{0.0.0.00000000}}.{guid}"))
