@@ -560,6 +560,142 @@ def set_rtss_fps_limit(fps: int) -> bool:
         return False
 
 
+# ── Audio output management (COM / IPolicyConfig) ─────────────────────────────
+# No extra dependencies — uses registry for listing and raw COM vtable calls
+# for default-device detection (IMMDeviceEnumerator) and switching (IPolicyConfig).
+# IPolicyConfig is undocumented but stable since Vista; used by EarTrumpet, SoundSwitch, etc.
+
+try:
+    ctypes.windll.ole32.CoInitialize(None)
+except Exception:
+    pass
+
+
+class _COGUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_uint8 * 8),
+    ]
+
+    @classmethod
+    def from_str(cls, s: str) -> "_COGUID":
+        s = s.strip("{}")
+        p = s.split("-")
+        g = cls()
+        g.Data1 = int(p[0], 16)
+        g.Data2 = int(p[1], 16)
+        g.Data3 = int(p[2], 16)
+        raw = bytes.fromhex(p[3] + p[4])
+        g.Data4 = (ctypes.c_uint8 * 8)(*raw)
+        return g
+
+
+def _com_create(clsid: str, iid: str):
+    c = _COGUID.from_str(clsid)
+    i = _COGUID.from_str(iid)
+    ptr = ctypes.c_void_p()
+    hr = ctypes.windll.ole32.CoCreateInstance(
+        ctypes.byref(c), None, 1, ctypes.byref(i), ctypes.byref(ptr)
+    )
+    return ptr if hr == 0 else None
+
+
+def _vtcall(ptr, idx, restype, *argtypes):
+    """Return a bound callable for COM vtable method at index idx."""
+    vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    fn   = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtbl[idx])
+    return lambda *args: fn(ptr, *args)
+
+
+def _com_release(ptr):
+    if ptr:
+        _vtcall(ptr, 2, ctypes.c_ulong)()
+
+
+_CLSID_MMDeviceEnumerator = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
+_IID_IMMDeviceEnumerator  = "{A95664D2-9614-4F35-A746-DE8DB63617E6}"
+_CLSID_PolicyConfig       = "{294935CE-F637-4E7C-A41B-AB255460B862}"
+_IID_IPolicyConfig        = "{568b9108-44bf-40b4-9006-86afe520171f}"
+_REG_RENDER               = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
+_PKEY_FriendlyName        = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
+
+
+def get_audio_outputs() -> list:
+    """Return [(friendly_name, device_id), ...] for all active render endpoints."""
+    devices = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _REG_RENDER) as root:
+            idx = 0
+            while True:
+                try:
+                    guid = winreg.EnumKey(root, idx)
+                    idx += 1
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                        f"{_REG_RENDER}\\{guid}") as k:
+                        state, _ = winreg.QueryValueEx(k, "DeviceState")
+                    if state != 1:      # DEVICE_STATE_ACTIVE
+                        continue
+                    try:
+                        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                            f"{_REG_RENDER}\\{guid}\\Properties") as pk:
+                            name, _ = winreg.QueryValueEx(pk, _PKEY_FriendlyName)
+                    except OSError:
+                        name = guid
+                    devices.append((name, f"{{0.0.0.00000000}}.{guid}"))
+                except OSError:
+                    break
+    except OSError:
+        pass
+    return devices
+
+
+def get_default_audio_output_id() -> str:
+    """Return the device ID of the current default render endpoint."""
+    enum = _com_create(_CLSID_MMDeviceEnumerator, _IID_IMMDeviceEnumerator)
+    if not enum:
+        return ""
+    try:
+        dev_ptr = ctypes.c_void_p()
+        # IMMDeviceEnumerator::GetDefaultAudioEndpoint(eRender=0, eConsole=0) @ vtbl[4]
+        hr = _vtcall(enum, 4, ctypes.HRESULT,
+                     ctypes.c_int, ctypes.c_int,
+                     ctypes.POINTER(ctypes.c_void_p))(0, 0, ctypes.byref(dev_ptr))
+        if hr != 0 or not dev_ptr:
+            return ""
+        try:
+            id_ptr = ctypes.c_wchar_p()
+            # IMMDevice::GetId(**ppstrId) @ vtbl[5]
+            hr2 = _vtcall(dev_ptr, 5, ctypes.HRESULT,
+                          ctypes.POINTER(ctypes.c_wchar_p))(ctypes.byref(id_ptr))
+            result = (id_ptr.value or "") if hr2 == 0 else ""
+            if id_ptr.value:
+                ctypes.windll.ole32.CoTaskMemFree(id_ptr)
+            return result
+        finally:
+            _com_release(dev_ptr)
+    finally:
+        _com_release(enum)
+
+
+def set_default_audio_output(device_id: str) -> bool:
+    """Switch the default render endpoint to device_id (all three roles)."""
+    policy = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
+    if not policy:
+        return False
+    try:
+        # IPolicyConfig::SetDefaultEndpoint(wszDeviceId, ERole) @ vtbl[13]
+        fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
+        for role in (0, 1, 2):     # eConsole, eMultimedia, eCommunications
+            fn(device_id, role)
+        return True
+    except Exception:
+        return False
+    finally:
+        _com_release(policy)
+
+
 # ── System tray icon ───────────────────────────────────────────────────────────
 def _create_tray_image() -> "Image.Image":
     size = 64
@@ -779,7 +915,17 @@ class App(tk.Tk):
         )
         menu.add_cascade(label="Refresh Rate", menu=self._rate_menu)
         menu.add_command(label="RTSS FPS Cap…", command=self._on_rtss_cap)
-        menu.config(postcommand=self._rebuild_rate_menu)
+
+        # Sound output cascade
+        self._sound_menu = tk.Menu(
+            menu, tearoff=0,
+            bg=SURFACE, fg=TEXT,
+            activebackground=OVERLAY, activeforeground=TEXT,
+            font=("Segoe UI", 10), bd=0,
+        )
+        menu.add_cascade(label="Sound Output", menu=self._sound_menu)
+
+        menu.config(postcommand=self._rebuild_misc_submenus)
 
         menu.add_separator()
         menu.add_command(label="Open Display Settings",
@@ -791,6 +937,29 @@ class App(tk.Tk):
 
         misc_btn.config(menu=menu)
         misc_btn.pack(side="left")
+
+    def _rebuild_misc_submenus(self):
+        self._rebuild_rate_menu()
+        self._rebuild_sound_menu()
+
+    def _rebuild_sound_menu(self):
+        self._sound_menu.delete(0, "end")
+        devices = get_audio_outputs()
+        if not devices:
+            self._sound_menu.add_command(label="    No devices found", state="disabled")
+            return
+        current = get_default_audio_output_id().lower()
+        for name, device_id in devices:
+            is_cur = device_id.lower() == current
+            label  = f"✓  {name}" if is_cur else f"    {name}"
+            self._sound_menu.add_command(
+                label=label,
+                command=lambda d=device_id: self._set_audio_output(d),
+            )
+
+    def _set_audio_output(self, device_id: str):
+        if not set_default_audio_output(device_id):
+            messagebox.showerror("Monitor Manager", "Could not switch audio output.")
 
     def _rebuild_rate_menu(self):
         self._rate_menu.delete(0, "end")
