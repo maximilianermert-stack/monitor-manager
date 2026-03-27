@@ -618,53 +618,96 @@ _CLSID_MMDeviceEnumerator = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
 _IID_IMMDeviceEnumerator  = "{A95664D2-9614-4F35-A746-DE8DB63617E6}"
 _CLSID_PolicyConfig       = "{294935CE-F637-4E7C-A41B-AB255460B862}"
 _IID_IPolicyConfig        = "{568b9108-44bf-40b4-9006-86afe520171f}"
-_REG_RENDER               = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
-_PKEY_FriendlyName        = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
 
 
-def _decode_propvariant(data) -> str:
-    """Extract a string from a PROPVARIANT stored as REG_BINARY.
-    VT_LPWSTR (0x1F): 8-byte header, then UTF-16LE string."""
-    if isinstance(data, str):
-        return data  # already a plain REG_SZ on some systems
-    if not isinstance(data, (bytes, bytearray)) or len(data) < 10:
-        return ""
-    vt = int.from_bytes(data[0:2], "little")
-    if vt == 31:  # VT_LPWSTR
-        try:
-            return data[8:].decode("utf-16-le").rstrip("\x00")
-        except Exception:
-            return ""
-    return ""
+class _PROPERTYKEY(ctypes.Structure):
+    _fields_ = [("fmtid", _COGUID), ("pid", ctypes.c_ulong)]
+
+
+class _PROPVARIANT(ctypes.Structure):
+    # vt + 3 reserved WORDs + 8-byte union (pointer on 64-bit)
+    _fields_ = [
+        ("vt",  ctypes.c_ushort),
+        ("r1",  ctypes.c_ushort),
+        ("r2",  ctypes.c_ushort),
+        ("r3",  ctypes.c_ushort),
+        ("val", ctypes.c_void_p),
+        ("_hi", ctypes.c_void_p),   # padding to full 16 bytes
+    ]
+
+
+_PKEY_DEVICE_FRIENDLY_NAME = _PROPERTYKEY()
+_PKEY_DEVICE_FRIENDLY_NAME.fmtid = _COGUID.from_str("{a45c254e-df1c-4efd-8020-67d146a850e0}")
+_PKEY_DEVICE_FRIENDLY_NAME.pid   = 14
 
 
 def get_audio_outputs() -> list:
-    """Return [(friendly_name, device_id), ...] for all active render endpoints."""
+    """Return [(friendly_name, device_id), ...] via IMMDeviceEnumerator + IPropertyStore."""
+    enum = _com_create(_CLSID_MMDeviceEnumerator, _IID_IMMDeviceEnumerator)
+    if not enum:
+        return []
     devices = []
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _REG_RENDER) as root:
-            idx = 0
-            while True:
+        coll = ctypes.c_void_p()
+        # IMMDeviceEnumerator::EnumAudioEndpoints(eRender=0, DEVICE_STATE_ACTIVE=1) @ vtbl[3]
+        hr = _vtcall(enum, 3, ctypes.HRESULT,
+                     ctypes.c_int, ctypes.c_uint,
+                     ctypes.POINTER(ctypes.c_void_p))(0, 1, ctypes.byref(coll))
+        if hr != 0 or not coll:
+            return []
+        try:
+            count = ctypes.c_uint(0)
+            # IMMDeviceCollection::GetCount @ vtbl[3]
+            _vtcall(coll, 3, ctypes.HRESULT,
+                    ctypes.POINTER(ctypes.c_uint))(ctypes.byref(count))
+            for i in range(count.value):
+                dev = ctypes.c_void_p()
+                # IMMDeviceCollection::Item @ vtbl[4]
+                if _vtcall(coll, 4, ctypes.HRESULT,
+                           ctypes.c_uint,
+                           ctypes.POINTER(ctypes.c_void_p))(i, ctypes.byref(dev)) != 0:
+                    continue
                 try:
-                    guid = winreg.EnumKey(root, idx)
-                    idx += 1
-                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                        f"{_REG_RENDER}\\{guid}") as k:
-                        state, _ = winreg.QueryValueEx(k, "DeviceState")
-                    if state != 1:      # DEVICE_STATE_ACTIVE
-                        continue
-                    try:
-                        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                            f"{_REG_RENDER}\\{guid}\\Properties") as pk:
-                            raw, _ = winreg.QueryValueEx(pk, _PKEY_FriendlyName)
-                            name   = _decode_propvariant(raw) or guid
-                    except OSError:
-                        name = guid
-                    devices.append((name, f"{{0.0.0.00000000}}.{guid}"))
-                except OSError:
-                    break
-    except OSError:
-        pass
+                    # IMMDevice::GetId @ vtbl[5]
+                    id_ptr = ctypes.c_wchar_p()
+                    dev_id = ""
+                    if _vtcall(dev, 5, ctypes.HRESULT,
+                               ctypes.POINTER(ctypes.c_wchar_p))(ctypes.byref(id_ptr)) == 0:
+                        dev_id = id_ptr.value or ""
+                        if id_ptr.value:
+                            ctypes.windll.ole32.CoTaskMemFree(id_ptr)
+
+                    # IMMDevice::OpenPropertyStore(STGM_READ=0) @ vtbl[4]
+                    store = ctypes.c_void_p()
+                    name  = ""
+                    if _vtcall(dev, 4, ctypes.HRESULT,
+                               ctypes.c_uint,
+                               ctypes.POINTER(ctypes.c_void_p))(0, ctypes.byref(store)) == 0 and store:
+                        try:
+                            pv = _PROPVARIANT()
+                            # IPropertyStore::GetValue(REFPROPERTYKEY, PROPVARIANT*) @ vtbl[5]
+                            if _vtcall(store, 5, ctypes.HRESULT,
+                                       ctypes.POINTER(_PROPERTYKEY),
+                                       ctypes.POINTER(_PROPVARIANT))(
+                                           ctypes.byref(_PKEY_DEVICE_FRIENDLY_NAME),
+                                           ctypes.byref(pv)) == 0:
+                                if pv.vt == 31 and pv.val:  # VT_LPWSTR
+                                    name = ctypes.wstring_at(pv.val)
+                            try:
+                                ctypes.windll.ole32.PropVariantClear(ctypes.byref(pv))
+                            except Exception:
+                                pass
+                        finally:
+                            _com_release(store)
+
+                    if dev_id:
+                        devices.append((name or dev_id, dev_id))
+                finally:
+                    _com_release(dev)
+        finally:
+            _com_release(coll)
+    finally:
+        _com_release(enum)
     return devices
 
 
