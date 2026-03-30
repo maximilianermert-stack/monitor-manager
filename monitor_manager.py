@@ -770,14 +770,16 @@ def set_default_audio_output(device_id: str) -> bool:
 def _set_audio_via_powershell(device_id: str) -> tuple:
     """Set default audio endpoint using inline C# COM interop via PowerShell.
     Returns (success: bool, error: str)."""
-    safe_id = device_id.replace("`", "``").replace('"', '`"')
-    # Note: [ComImport] belongs only on the class, NOT the interface.
+    safe_id = device_id.replace('"', '\\"')
+    # Use a static C# helper that does COM creation internally via Activator.CreateInstance
+    # so we never need New-Object or type casting in PowerShell.
     script = f"""
 $ErrorActionPreference = 'Stop'
 try {{
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+
 [Guid("568b9108-44bf-40b4-9006-86afe520171f")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IPolicyConfig {{
@@ -794,15 +796,20 @@ public interface IPolicyConfig {{
     [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, uint role);
     [PreserveSig] int M11(IntPtr a, int b);
 }}
-[ComImport]
-[Guid("294935CE-F637-4E7C-A41B-AB255460B862")]
-[ClassInterface(ClassInterfaceType.None)]
-public class PolicyConfigClient {{}}
+
+public static class AudioPolicy {{
+    static readonly Guid CLSID = new Guid("294935CE-F637-4E7C-A41B-AB255460B862");
+    public static void SetDefault(string deviceId) {{
+        var type = Type.GetTypeFromCLSID(CLSID, true);
+        var obj  = Activator.CreateInstance(type);
+        var ipc  = (IPolicyConfig)obj;
+        ipc.SetDefaultEndpoint(deviceId, 0);
+        ipc.SetDefaultEndpoint(deviceId, 1);
+        ipc.SetDefaultEndpoint(deviceId, 2);
+    }}
+}}
 '@
-    $ipc = [IPolicyConfig](New-Object PolicyConfigClient)
-    $ipc.SetDefaultEndpoint("{safe_id}", 0)
-    $ipc.SetDefaultEndpoint("{safe_id}", 1)
-    $ipc.SetDefaultEndpoint("{safe_id}", 2)
+    [AudioPolicy]::SetDefault("{safe_id}")
     exit 0
 }} catch {{
     Write-Error $_.Exception.Message
