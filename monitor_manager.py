@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import urllib.request
+import shutil
 
 try:
     import pystray
@@ -864,25 +865,42 @@ def download_update() -> tuple:
 
 
 def apply_update(tmp_exe: str):
-    """Launch self-replace batch script immediately before app exits."""
+    """Swap exe files and relaunch.
+    Windows locks a running .exe against overwrite but allows rename,
+    so we rename the current exe out of the way, move the new one in,
+    then start the new process. A cleanup batch removes the .old file later.
+    """
+    import shutil
     current_exe = sys.executable
-    bat = os.path.join(tempfile.gettempdir(), "mm_update.bat")
-    with open(bat, "w") as f:
-        f.write(
-            "@echo off\n"
-            ":retry\n"
-            f"move /y \"{tmp_exe}\" \"{current_exe}\" >NUL 2>&1\n"
-            "if errorlevel 1 (\n"
-            "    ping -n 2 127.0.0.1 >NUL\n"
-            "    goto retry\n"
-            ")\n"
-            f"start \"\" \"{current_exe}\"\n"
-            "del \"%~f0\"\n"
+    old_exe     = current_exe + ".old"
+    try:
+        # Remove leftover .old from a previous update if present
+        if os.path.exists(old_exe):
+            try:
+                os.unlink(old_exe)
+            except Exception:
+                pass
+        # Rename the running exe (rename is allowed while exe is running)
+        os.rename(current_exe, old_exe)
+        # Place the downloaded exe at the original path
+        shutil.move(tmp_exe, current_exe)
+        # Start the new version (inherits elevated token, no UAC prompt needed)
+        subprocess.Popen([current_exe], creationflags=_DETACHED_PROCESS)
+        # Small cleanup batch: delete the .old file after old process exits
+        bat = os.path.join(tempfile.gettempdir(), "mm_cleanup.bat")
+        with open(bat, "w") as f:
+            f.write(
+                f"@echo off\n"
+                f"ping -n 5 127.0.0.1 >NUL\n"
+                f"del \"{old_exe}\" >NUL 2>&1\n"
+                f"del \"%~f0\"\n"
+            )
+        subprocess.Popen(
+            ["cmd", "/c", bat],
+            creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
         )
-    subprocess.Popen(
-        ["cmd", "/c", bat],
-        creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
-    )
+    except Exception:
+        pass
 
 
 # ── System tray icon ───────────────────────────────────────────────────────────
