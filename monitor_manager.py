@@ -762,20 +762,21 @@ def set_default_audio_output(device_id: str) -> bool:
             _com_release(policy)
 
     # ── Fallback: PowerShell + .NET COM interop (works on all Windows versions) ─
-    return _set_audio_via_powershell(device_id)
+    ok, _ = _set_audio_via_powershell(device_id)
+    return ok
 
 
-def _set_audio_via_powershell(device_id: str) -> bool:
-    """Set default audio endpoint using inline C# COM interop via PowerShell."""
-    # Escape any backticks or quotes in device_id (device IDs are GUIDs so this is precautionary)
+def _set_audio_via_powershell(device_id: str) -> tuple:
+    """Set default audio endpoint using inline C# COM interop via PowerShell.
+    Returns (success: bool, error: str)."""
     safe_id = device_id.replace("`", "``").replace('"', '`"')
+    # Note: [ComImport] belongs only on the class, NOT the interface.
     script = f"""
 $ErrorActionPreference = 'Stop'
 try {{
-    Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+    Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-[ComImport]
 [Guid("568b9108-44bf-40b4-9006-86afe520171f")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IPolicyConfig {{
@@ -803,12 +804,12 @@ public class PolicyConfigClient {{}}
     $ipc.SetDefaultEndpoint("{safe_id}", 2)
     exit 0
 }} catch {{
+    Write-Error $_.Exception.Message
     exit 1
 }}
 """
     tmp = None
     try:
-        import tempfile
         with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1",
                                          delete=False, encoding="utf-8") as f:
             f.write(script)
@@ -816,12 +817,15 @@ public class PolicyConfigClient {{}}
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-File", tmp],
-            capture_output=True, timeout=15,
+            capture_output=True, text=True, timeout=20,
             creationflags=CREATE_NO_WINDOW,
         )
-        return result.returncode == 0
-    except Exception:
-        return False
+        if result.returncode == 0:
+            return True, ""
+        err = (result.stderr or result.stdout or "").strip()
+        return False, err
+    except Exception as e:
+        return False, str(e)
     finally:
         if tmp:
             try:
@@ -838,8 +842,8 @@ _GITHUB_RELEASE_URL = (
 _DETACHED_PROCESS = 0x00000008
 
 
-def download_and_update() -> tuple:
-    """Download latest exe from GitHub and schedule self-replace. Returns (ok, error_msg)."""
+def download_update() -> tuple:
+    """Download latest exe from GitHub. Returns (ok, tmp_exe_path_or_error)."""
     if not getattr(sys, "frozen", False):
         return False, "Auto-update only works when running as .exe"
     try:
@@ -854,23 +858,31 @@ def download_and_update() -> tuple:
         download_url = assets[0]["browser_download_url"]
         tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
         urllib.request.urlretrieve(download_url, tmp_exe)
-        current_exe = sys.executable
-        bat = os.path.join(tempfile.gettempdir(), "mm_update.bat")
-        with open(bat, "w") as f:
-            f.write(
-                f"@echo off\n"
-                f"ping -n 4 127.0.0.1 >NUL\n"
-                f"move /y \"{tmp_exe}\" \"{current_exe}\"\n"
-                f"start \"\" \"{current_exe}\"\n"
-                f"del \"%~f0\"\n"
-            )
-        subprocess.Popen(
-            ["cmd", "/c", bat],
-            creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
-        )
-        return True, ""
+        return True, tmp_exe
     except Exception as e:
         return False, str(e)
+
+
+def apply_update(tmp_exe: str):
+    """Launch self-replace batch script immediately before app exits."""
+    current_exe = sys.executable
+    bat = os.path.join(tempfile.gettempdir(), "mm_update.bat")
+    with open(bat, "w") as f:
+        f.write(
+            "@echo off\n"
+            ":retry\n"
+            f"move /y \"{tmp_exe}\" \"{current_exe}\" >NUL 2>&1\n"
+            "if errorlevel 1 (\n"
+            "    ping -n 2 127.0.0.1 >NUL\n"
+            "    goto retry\n"
+            ")\n"
+            f"start \"\" \"{current_exe}\"\n"
+            "del \"%~f0\"\n"
+        )
+    subprocess.Popen(
+        ["cmd", "/c", bat],
+        creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
+    )
 
 
 # ── System tray icon ───────────────────────────────────────────────────────────
@@ -1137,8 +1149,32 @@ class App(tk.Tk):
             )
 
     def _set_audio_output(self, device_id: str):
-        if not set_default_audio_output(device_id):
-            messagebox.showerror("Monitor Manager", "Could not switch audio output.")
+        # Run in thread so PowerShell fallback doesn't freeze the UI
+        threading.Thread(
+            target=self._do_set_audio, args=(device_id,), daemon=True
+        ).start()
+
+    def _do_set_audio(self, device_id: str):
+        # Try fast COM path first
+        policy = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
+        if policy:
+            try:
+                fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
+                ok = all(fn(device_id, r) in (0, 1) for r in (0, 1, 2))
+                if ok:
+                    return
+            except Exception:
+                pass
+            finally:
+                _com_release(policy)
+        # PowerShell fallback
+        ok, err = _set_audio_via_powershell(device_id)
+        if not ok:
+            self.after(0, lambda: messagebox.showerror(
+                "Audio switch failed",
+                f"Could not switch audio output.\n\n{err}" if err else
+                "Could not switch audio output."
+            ))
 
     def _rebuild_rate_menu(self):
         self._rate_menu.delete(0, "end")
@@ -1211,17 +1247,21 @@ class App(tk.Tk):
 
     def _do_update(self):
         self.after(0, lambda: self._set_title("Monitor Manager  —  Downloading update…"))
-        ok, err = download_and_update()
+        ok, result = download_update()
         if ok:
-            self.after(0, lambda: (
-                messagebox.showinfo("Update", "Update downloaded!\nThe app will restart now."),
-                self._quit_app()
-            ))
+            # Switch back to main thread to show dialog, THEN launch batch and quit
+            self.after(0, lambda: self._finish_update(result))
         else:
             self.after(0, lambda: (
                 self._set_title("Monitor Manager"),
-                messagebox.showerror("Update failed", err or "Could not download update."),
+                messagebox.showerror("Update failed", result or "Could not download update."),
             ))
+
+    def _finish_update(self, tmp_exe: str):
+        self._set_title("Monitor Manager")
+        messagebox.showinfo("Update", "Update downloaded!\nThe app will now restart.")
+        apply_update(tmp_exe)   # launch batch RIGHT before quitting
+        self._quit_app()
 
     def _set_title(self, title: str):
         self.title(title)
