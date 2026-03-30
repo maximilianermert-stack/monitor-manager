@@ -740,20 +740,92 @@ def get_default_audio_output_id() -> str:
 
 
 def set_default_audio_output(device_id: str) -> bool:
-    """Switch the default render endpoint to device_id (all three roles)."""
+    """Switch the default render endpoint. Tries fast COM path first, then PowerShell fallback."""
+    # ── Fast path: direct COM vtable call ──────────────────────────────────────
     policy = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
-    if not policy:
-        return False
+    if policy:
+        try:
+            fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
+            ok = True
+            for role in (0, 1, 2):
+                hr = fn(device_id, role)
+                if hr not in (0, 1):    # S_OK or S_FALSE
+                    ok = False
+                    break
+            if ok:
+                return True
+        except Exception:
+            pass
+        finally:
+            _com_release(policy)
+
+    # ── Fallback: PowerShell + .NET COM interop (works on all Windows versions) ─
+    return _set_audio_via_powershell(device_id)
+
+
+def _set_audio_via_powershell(device_id: str) -> bool:
+    """Set default audio endpoint using inline C# COM interop via PowerShell."""
+    # Escape any backticks or quotes in device_id (device IDs are GUIDs so this is precautionary)
+    safe_id = device_id.replace("`", "``").replace('"', '`"')
+    script = f"""
+$ErrorActionPreference = 'Stop'
+try {{
+    Add-Type -ErrorAction SilentlyContinue -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport]
+[Guid("568b9108-44bf-40b4-9006-86afe520171f")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IPolicyConfig {{
+    [PreserveSig] int M0(IntPtr a, IntPtr b);
+    [PreserveSig] int M1(IntPtr a, int b, IntPtr c);
+    [PreserveSig] int M2(IntPtr a);
+    [PreserveSig] int M3(IntPtr a, IntPtr b, IntPtr c);
+    [PreserveSig] int M4(IntPtr a, int b, IntPtr c, IntPtr d);
+    [PreserveSig] int M5(IntPtr a, IntPtr b);
+    [PreserveSig] int M6(IntPtr a, IntPtr b);
+    [PreserveSig] int M7(IntPtr a, IntPtr c);
+    [PreserveSig] int M8(IntPtr a, int b, IntPtr c, IntPtr d);
+    [PreserveSig] int M9(IntPtr a, int b, IntPtr c, IntPtr d);
+    [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, uint role);
+    [PreserveSig] int M11(IntPtr a, int b);
+}}
+[ComImport]
+[Guid("294935CE-F637-4E7C-A41B-AB255460B862")]
+[ClassInterface(ClassInterfaceType.None)]
+public class PolicyConfigClient {{}}
+'@
+    $ipc = [IPolicyConfig](New-Object PolicyConfigClient)
+    $ipc.SetDefaultEndpoint("{safe_id}", 0)
+    $ipc.SetDefaultEndpoint("{safe_id}", 1)
+    $ipc.SetDefaultEndpoint("{safe_id}", 2)
+    exit 0
+}} catch {{
+    exit 1
+}}
+"""
+    tmp = None
     try:
-        # IPolicyConfig::SetDefaultEndpoint(wszDeviceId, ERole) @ vtbl[13]
-        fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
-        for role in (0, 1, 2):     # eConsole, eMultimedia, eCommunications
-            fn(device_id, role)
-        return True
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1",
+                                         delete=False, encoding="utf-8") as f:
+            f.write(script)
+            tmp = f.name
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-File", tmp],
+            capture_output=True, timeout=15,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        return result.returncode == 0
     except Exception:
         return False
     finally:
-        _com_release(policy)
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
 
 # ── System tray icon ───────────────────────────────────────────────────────────
