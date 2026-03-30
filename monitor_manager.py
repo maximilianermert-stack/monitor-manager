@@ -14,6 +14,8 @@ import threading
 import json
 import os
 import sys
+import tempfile
+import urllib.request
 
 try:
     import pystray
@@ -828,6 +830,49 @@ public class PolicyConfigClient {{}}
                 pass
 
 
+# ── Auto-update ────────────────────────────────────────────────────────────────
+_GITHUB_RELEASE_URL = (
+    "https://api.github.com/repos/maximilianermert-stack/monitor-manager"
+    "/releases/tags/latest"
+)
+_DETACHED_PROCESS = 0x00000008
+
+
+def download_and_update() -> tuple:
+    """Download latest exe from GitHub and schedule self-replace. Returns (ok, error_msg)."""
+    if not getattr(sys, "frozen", False):
+        return False, "Auto-update only works when running as .exe"
+    try:
+        req = urllib.request.Request(
+            _GITHUB_RELEASE_URL, headers={"User-Agent": "MonitorManager"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        assets = [a for a in data.get("assets", []) if a["name"].endswith(".exe")]
+        if not assets:
+            return False, "No .exe found in latest release."
+        download_url = assets[0]["browser_download_url"]
+        tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
+        urllib.request.urlretrieve(download_url, tmp_exe)
+        current_exe = sys.executable
+        bat = os.path.join(tempfile.gettempdir(), "mm_update.bat")
+        with open(bat, "w") as f:
+            f.write(
+                f"@echo off\n"
+                f"ping -n 4 127.0.0.1 >NUL\n"
+                f"move /y \"{tmp_exe}\" \"{current_exe}\"\n"
+                f"start \"\" \"{current_exe}\"\n"
+                f"del \"%~f0\"\n"
+            )
+        subprocess.Popen(
+            ["cmd", "/c", bat],
+            creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
+        )
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 # ── System tray icon ───────────────────────────────────────────────────────────
 def _create_tray_image() -> "Image.Image":
     size = 64
@@ -1066,6 +1111,8 @@ class App(tk.Tk):
         menu.add_checkbutton(label="Start with Windows",
                              variable=self._autostart_var,
                              command=self._on_toggle_autostart)
+        menu.add_separator()
+        menu.add_command(label="Check for Updates", command=self._on_check_update)
 
         misc_btn.config(menu=menu)
         misc_btn.pack(side="left")
@@ -1158,6 +1205,26 @@ class App(tk.Tk):
 
     def _on_toggle_autostart(self):
         set_autostart(self._autostart_var.get())
+
+    def _on_check_update(self):
+        threading.Thread(target=self._do_update, daemon=True).start()
+
+    def _do_update(self):
+        self.after(0, lambda: self._set_title("Monitor Manager  —  Downloading update…"))
+        ok, err = download_and_update()
+        if ok:
+            self.after(0, lambda: (
+                messagebox.showinfo("Update", "Update downloaded!\nThe app will restart now."),
+                self._quit_app()
+            ))
+        else:
+            self.after(0, lambda: (
+                self._set_title("Monitor Manager"),
+                messagebox.showerror("Update failed", err or "Could not download update."),
+            ))
+
+    def _set_title(self, title: str):
+        self.title(title)
 
     def _toggle_autostart(self, icon=None, item=None):
         """Called from tray menu."""
