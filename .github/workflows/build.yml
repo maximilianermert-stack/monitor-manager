@@ -38,6 +38,11 @@ jobs:
           cd tempreader
           dotnet publish -c Release --framework net472 -o ../tempreader_out
 
+      - name: Build AudioSwitch (C# / IPolicyConfig)
+        run: |
+          cd audioswitch
+          dotnet publish -c Release --framework net472 -o ../audioswitch_out
+
       - name: Generate app icon
         run: python create_icon.py
 
@@ -50,6 +55,7 @@ jobs:
           --uac-admin
           --icon icon.ico
           --add-data "tempreader_out;tempreader"
+          --add-data "audioswitch_out;audioswitch"
           monitor_manager.py
 
       - name: Upload artifact (auto build)

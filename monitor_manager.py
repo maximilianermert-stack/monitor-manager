@@ -742,104 +742,30 @@ def get_default_audio_output_id() -> str:
         _com_release(enum)
 
 
-def set_default_audio_output(device_id: str) -> bool:
-    """Switch the default render endpoint. Tries fast COM path first, then PowerShell fallback."""
-    # ── Fast path: direct COM vtable call ──────────────────────────────────────
-    policy = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
-    if policy:
-        try:
-            fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
-            ok = True
-            for role in (0, 1, 2):
-                hr = fn(device_id, role)
-                if hr not in (0, 1):    # S_OK or S_FALSE
-                    ok = False
-                    break
-            if ok:
-                return True
-        except Exception:
-            pass
-        finally:
-            _com_release(policy)
-
-    # ── Fallback: PowerShell + .NET COM interop (works on all Windows versions) ─
-    ok, _ = _set_audio_via_powershell(device_id)
-    return ok
+def _audioswitch_path() -> str:
+    """Path to the bundled AudioSwitch.exe."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, "audioswitch", "AudioSwitch.exe")
+    return os.path.join(os.path.dirname(__file__), "audioswitch_out", "AudioSwitch.exe")
 
 
-def _set_audio_via_powershell(device_id: str) -> tuple:
-    """Set default audio endpoint using inline C# COM interop via PowerShell.
+def set_default_audio_output(device_id: str) -> tuple:
+    """Switch default audio endpoint via bundled AudioSwitch.exe.
     Returns (success: bool, error: str)."""
-    safe_id = device_id.replace('"', '\\"')
-    # Use a static C# helper that does COM creation internally via Activator.CreateInstance
-    # so we never need New-Object or type casting in PowerShell.
-    script = f"""
-$ErrorActionPreference = 'Stop'
-try {{
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-
-[Guid("568b9108-44bf-40b4-9006-86afe520171f")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IPolicyConfig {{
-    [PreserveSig] int M0(IntPtr a, IntPtr b);
-    [PreserveSig] int M1(IntPtr a, int b, IntPtr c);
-    [PreserveSig] int M2(IntPtr a);
-    [PreserveSig] int M3(IntPtr a, IntPtr b, IntPtr c);
-    [PreserveSig] int M4(IntPtr a, int b, IntPtr c, IntPtr d);
-    [PreserveSig] int M5(IntPtr a, IntPtr b);
-    [PreserveSig] int M6(IntPtr a, IntPtr b);
-    [PreserveSig] int M7(IntPtr a, IntPtr c);
-    [PreserveSig] int M8(IntPtr a, int b, IntPtr c, IntPtr d);
-    [PreserveSig] int M9(IntPtr a, int b, IntPtr c, IntPtr d);
-    [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, uint role);
-    [PreserveSig] int M11(IntPtr a, int b);
-}}
-
-public static class AudioPolicy {{
-    static readonly Guid CLSID = new Guid("294935CE-F637-4E7C-A41B-AB255460B862");
-    public static void SetDefault(string deviceId) {{
-        var type = Type.GetTypeFromCLSID(CLSID, true);
-        var obj  = Activator.CreateInstance(type);
-        var ipc  = (IPolicyConfig)obj;
-        ipc.SetDefaultEndpoint(deviceId, 0);
-        ipc.SetDefaultEndpoint(deviceId, 1);
-        ipc.SetDefaultEndpoint(deviceId, 2);
-    }}
-}}
-'@
-    [AudioPolicy]::SetDefault("{safe_id}")
-    exit 0
-}} catch {{
-    Write-Error $_.Exception.Message
-    exit 1
-}}
-"""
-    tmp = None
+    path = _audioswitch_path()
+    if not os.path.exists(path):
+        return False, "AudioSwitch.exe not found."
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1",
-                                         delete=False, encoding="utf-8") as f:
-            f.write(script)
-            tmp = f.name
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-File", tmp],
-            capture_output=True, text=True, timeout=20,
+            [path, device_id],
+            capture_output=True, text=True, timeout=10,
             creationflags=CREATE_NO_WINDOW,
         )
         if result.returncode == 0:
             return True, ""
-        err = (result.stderr or result.stdout or "").strip()
-        return False, err
+        return False, (result.stderr or result.stdout or "").strip()
     except Exception as e:
         return False, str(e)
-    finally:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
 
 
 # ── Auto-update ────────────────────────────────────────────────────────────────
@@ -1180,20 +1106,7 @@ class App(tk.Tk):
         ).start()
 
     def _do_set_audio(self, device_id: str):
-        # Try fast COM path first
-        policy = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
-        if policy:
-            try:
-                fn = _vtcall(policy, 13, ctypes.HRESULT, ctypes.c_wchar_p, ctypes.c_int)
-                ok = all(fn(device_id, r) in (0, 1) for r in (0, 1, 2))
-                if ok:
-                    return
-            except Exception:
-                pass
-            finally:
-                _com_release(policy)
-        # PowerShell fallback
-        ok, err = _set_audio_via_powershell(device_id)
+        ok, err = set_default_audio_output(device_id)
         if not ok:
             self.after(0, lambda: messagebox.showerror(
                 "Audio switch failed",
