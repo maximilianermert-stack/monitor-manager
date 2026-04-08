@@ -750,20 +750,52 @@ def _audioswitch_path() -> str:
 
 
 def set_default_audio_output(device_id: str) -> tuple:
-    """Switch default audio endpoint via bundled AudioSwitch.exe.
+    """Switch default audio endpoint.
+    Tries native Python COM call first; falls back to AudioSwitch.exe.
     Returns (success: bool, error: str)."""
-    path = _audioswitch_path()
-    if not os.path.exists(path):
+    # --- Primary: call IPolicyConfig::SetDefaultEndpoint directly via ctypes ---
+    # vtable: IUnknown(0-2) + GetMixFormat(3) GetDeviceFormat(4) ResetDeviceFormat(5)
+    #         SetDeviceFormat(6) GetProcessingPeriod(7) SetProcessingPeriod(8)
+    #         GetShareMode(9) SetShareMode(10) GetPropertyValue(11) SetPropertyValue(12)
+    #         SetDefaultEndpoint(13)
+    try:
+        pcc = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
+        if pcc:
+            try:
+                last_hr = 0
+                for role in range(3):
+                    last_hr = _vtcall(pcc, 13, ctypes.HRESULT,
+                                      ctypes.c_wchar_p,
+                                      ctypes.c_uint)(device_id, role)
+                if last_hr == 0:
+                    return True, ""
+            finally:
+                _com_release(pcc)
+    except Exception:
+        pass
+
+    # --- Fallback: AudioSwitch.exe ---
+    exe = _audioswitch_path()
+    if not os.path.exists(exe):
         return False, "AudioSwitch.exe not found."
     try:
         result = subprocess.run(
-            [path, device_id],
-            capture_output=True, text=True, timeout=10,
+            [exe, device_id],
+            capture_output=True, timeout=10,
             creationflags=CREATE_NO_WINDOW,
         )
+        def _dec(b):
+            for enc in ('utf-8', 'cp1252', 'cp850', 'latin-1'):
+                try:
+                    return b.decode(enc).strip()
+                except Exception:
+                    pass
+            return repr(b)
+        stderr = _dec(result.stderr)
+        stdout = _dec(result.stdout)
         if result.returncode == 0:
             return True, ""
-        return False, (result.stderr or result.stdout or "").strip()
+        return False, stderr or stdout or f"exit code {result.returncode}"
     except Exception as e:
         return False, str(e)
 
