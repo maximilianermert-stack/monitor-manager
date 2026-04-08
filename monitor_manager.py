@@ -749,18 +749,32 @@ def _audioswitch_path() -> str:
     return os.path.join(os.path.dirname(__file__), "audioswitch_out", "AudioSwitch.exe")
 
 
+_IID_IUnknown = "{00000000-0000-0000-C000-000000000046}"
+
 def set_default_audio_output(device_id: str) -> tuple:
     """Switch default audio endpoint.
-    Tries native Python COM call first; falls back to AudioSwitch.exe.
+    Tries native Python COM call first (two IID variants); falls back to AudioSwitch.exe.
     Returns (success: bool, error: str)."""
-    # --- Primary: call IPolicyConfig::SetDefaultEndpoint directly via ctypes ---
-    # vtable: IUnknown(0-2) + GetMixFormat(3) GetDeviceFormat(4) ResetDeviceFormat(5)
-    #         SetDeviceFormat(6) GetProcessingPeriod(7) SetProcessingPeriod(8)
-    #         GetShareMode(9) SetShareMode(10) GetPropertyValue(11) SetPropertyValue(12)
-    #         SetDefaultEndpoint(13)
-    try:
-        pcc = _com_create(_CLSID_PolicyConfig, _IID_IPolicyConfig)
-        if pcc:
+    # vtable layout (IUnknown base + IPolicyConfig methods):
+    # IUnknown(0-2) + GetMixFormat(3) GetDeviceFormat(4) ResetDeviceFormat(5)
+    # SetDeviceFormat(6) GetProcessingPeriod(7) SetProcessingPeriod(8)
+    # GetShareMode(9) SetShareMode(10) GetPropertyValue(11) SetPropertyValue(12)
+    # SetDefaultEndpoint(13)
+    #
+    # On newer Windows, QueryInterface for IPolicyConfig IID fails, so we also
+    # try IUnknown (always succeeds) and call vtable[13] directly — the vtable
+    # pointer returned by CoCreateInstance IS the full interface vtable.
+    for iid in (_IID_IPolicyConfig, _IID_IUnknown):
+        try:
+            clsid_g = _COGUID.from_str(_CLSID_PolicyConfig)
+            iid_g   = _COGUID.from_str(iid)
+            pcc     = ctypes.c_void_p()
+            hr = ctypes.windll.ole32.CoCreateInstance(
+                ctypes.byref(clsid_g), None, 23,   # CLSCTX_ALL
+                ctypes.byref(iid_g), ctypes.byref(pcc)
+            )
+            if hr != 0 or not pcc:
+                continue
             try:
                 last_hr = 0
                 for role in range(3):
@@ -771,8 +785,8 @@ def set_default_audio_output(device_id: str) -> tuple:
                     return True, ""
             finally:
                 _com_release(pcc)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # --- Fallback: AudioSwitch.exe ---
     exe = _audioswitch_path()

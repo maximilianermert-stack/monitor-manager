@@ -1,45 +1,64 @@
 using System;
 using System.Runtime.InteropServices;
 
-[Guid("568b9108-44bf-40b4-9006-86afe520171f")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IPolicyConfig
-{
-    [PreserveSig] int GetMixFormat(string d, IntPtr p);
-    [PreserveSig] int GetDeviceFormat(string d, bool b, IntPtr p);
-    [PreserveSig] int ResetDeviceFormat(string d);
-    [PreserveSig] int SetDeviceFormat(string d, IntPtr p, IntPtr m);
-    [PreserveSig] int GetProcessingPeriod(string d, bool b, IntPtr p1, IntPtr p2);
-    [PreserveSig] int SetProcessingPeriod(string d, IntPtr p);
-    [PreserveSig] int GetShareMode(string d, IntPtr p);
-    [PreserveSig] int SetShareMode(string d, IntPtr p);
-    [PreserveSig] int GetPropertyValue(string d, bool b, IntPtr k, IntPtr v);
-    [PreserveSig] int SetPropertyValue(string d, bool b, IntPtr k, IntPtr v);
-    [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, uint role);
-    [PreserveSig] int SetEndpointVisibility(string d, bool b);
-}
-
+// PolicyConfigClient COM class — CLSID is stable across Windows versions.
+// We do NOT cast to IPolicyConfig (that IID changed on newer Windows).
+// Instead we get IUnknown (always works) and call vtable[13] directly.
 [ComImport]
 [Guid("294935CE-F637-4E7C-A41B-AB255460B862")]
 [ClassInterface(ClassInterfaceType.None)]
 class PolicyConfigClient { }
+
+// vtable: IUnknown(0-2) + GetMixFormat(3) GetDeviceFormat(4) ResetDeviceFormat(5)
+//         SetDeviceFormat(6) GetProcessingPeriod(7) SetProcessingPeriod(8)
+//         GetShareMode(9) SetShareMode(10) GetPropertyValue(11) SetPropertyValue(12)
+//         SetDefaultEndpoint(13)
+[UnmanagedFunctionPointer(CallingConvention.StdCall)]
+delegate int SetDefaultEndpointFn(
+    IntPtr self,
+    [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+    uint role);
 
 class Program
 {
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length < 1) return 1;
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Usage: AudioSwitch.exe <deviceId>");
+            return 1;
+        }
+
         try
         {
-            var ipc = (IPolicyConfig)(new PolicyConfigClient());
-            for (uint role = 0; role < 3; role++)
-                ipc.SetDefaultEndpoint(args[0], role);
-            return 0;
+            var obj  = new PolicyConfigClient();
+            IntPtr punk = Marshal.GetIUnknownForObject(obj);
+            try
+            {
+                IntPtr vtable = Marshal.ReadIntPtr(punk);
+                IntPtr fnPtr  = Marshal.ReadIntPtr(vtable, 13 * IntPtr.Size);
+                var fn = Marshal.GetDelegateForFunctionPointer<SetDefaultEndpointFn>(fnPtr);
+
+                for (uint role = 0; role < 3; role++)
+                {
+                    int hr = fn(punk, args[0], role);
+                    if (hr != 0)
+                    {
+                        Console.Error.WriteLine($"HRESULT 0x{(uint)hr:X8} role={role}");
+                        return 1;
+                    }
+                }
+                return 0;
+            }
+            finally
+            {
+                Marshal.Release(punk);
+            }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine(ex.Message);
+            Console.Error.WriteLine($"{ex.GetType().Name}: {ex.Message}");
             return 1;
         }
     }
