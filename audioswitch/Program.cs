@@ -43,7 +43,8 @@ class Program
                 for (uint role = 0; role < 3; role++)
                 {
                     int hr = fn(punk, args[0], role);
-                    if (hr != 0)
+                    // HRESULT: negative = failure (bit 31 set), positive = success
+                    if (hr < 0)
                     {
                         Console.Error.WriteLine($"HRESULT 0x{(uint)hr:X8} role={role}");
                         return 1;

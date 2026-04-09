@@ -776,13 +776,15 @@ def set_default_audio_output(device_id: str) -> tuple:
             if hr != 0 or not pcc:
                 continue
             try:
-                last_hr = 0
                 for role in range(3):
                     last_hr = _vtcall(pcc, 13, ctypes.HRESULT,
                                       ctypes.c_wchar_p,
                                       ctypes.c_uint)(device_id, role)
-                if last_hr == 0:
-                    return True, ""
+                    # HRESULT: bit 31 set = failure; positive values = success
+                    if last_hr < 0:
+                        break
+                else:
+                    return True, ""  # all 3 roles succeeded
             finally:
                 _com_release(pcc)
         except Exception:
