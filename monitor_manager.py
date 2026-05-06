@@ -47,6 +47,13 @@ CREATE_NO_WINDOW            = 0x08000000
 QDC_ONLY_ACTIVE_PATHS       = 0x00000002
 DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO = 9
 
+# Window snapping
+GWL_STYLE        = -16
+SW_RESTORE       = 9
+SWP_NOZORDER     = 0x0004
+SWP_NOACTIVATE   = 0x0010
+SWP_FRAMECHANGED = 0x0020
+
 # ── Structures ─────────────────────────────────────────────────────────────────
 class RECT(ctypes.Structure):
     _fields_ = [
@@ -202,6 +209,64 @@ def get_active_monitors():
     ctypes.windll.user32.EnumDisplayMonitors(None, None, _MonitorEnumProc(_cb), 0)
     monitors.sort(key=lambda m: (not m["primary"], m["index"]))
     return monitors
+
+
+# ── Window snap helpers ─────────────────────────────────────────────────────────
+_WindowEnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong, ctypes.c_long)
+
+
+def _enum_snappable_windows():
+    """Return list of (hwnd, title) for visible top-level windows with titles."""
+    results = []
+
+    def _cb(hwnd, _):
+        if not ctypes.windll.user32.IsWindowVisible(hwnd):
+            return True
+        length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value.strip()
+        if title:
+            results.append((hwnd, title))
+        return True
+
+    ctypes.windll.user32.EnumWindows(_WindowEnumProc(_cb), 0)
+    return results
+
+
+def _get_monitor_work_areas():
+    """Return list of dicts with work area geometry for each monitor."""
+    areas = []
+
+    def _cb(hMonitor, hdc, lprc, _):
+        info = MONITORINFOEX()
+        info.cbSize = ctypes.sizeof(MONITORINFOEX)
+        ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(info))
+        r = info.rcWork
+        areas.append({
+            "device":  info.szDevice,
+            "left":    r.left,
+            "top":     r.top,
+            "width":   r.right  - r.left,
+            "height":  r.bottom - r.top,
+            "primary": bool(info.dwFlags & MONITORINFOF_PRIMARY),
+        })
+        return True
+
+    ctypes.windll.user32.EnumDisplayMonitors(None, None, _MonitorEnumProc(_cb), 0)
+    areas.sort(key=lambda m: (not m["primary"],))
+    return areas
+
+
+def snap_window_to(hwnd: int, x: int, y: int, w: int, h: int):
+    """Restore and reposition a window to the given rectangle."""
+    ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+    ctypes.windll.user32.SetWindowPos(
+        hwnd, None, x, y, w, h,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    )
 
 
 def get_disabled_devices(active_names: set) -> list:
@@ -921,6 +986,150 @@ def make_btn(parent, label, cmd, fg=TEXT):
         padx=12, pady=6, cursor="hand2", bd=0,
     )
 
+# ── Snap Window dialog ─────────────────────────────────────────────────────────
+class SnapWindowDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Snap Window")
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        self.grab_set()
+
+        tk.Label(self, text="Snap Window",
+                 font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT,
+                 padx=20, pady=14).pack()
+
+        # Window picker
+        self._windows = _enum_snappable_windows()
+        win_row = tk.Frame(self, bg=BG, padx=20)
+        win_row.pack(fill="x", pady=(0, 4))
+        tk.Label(win_row, text="Window:", font=("Segoe UI", 10),
+                 bg=BG, fg=SUBTEXT).pack(side="left")
+
+        self._win_var = tk.StringVar()
+        win_titles = [t[:55] for _, t in self._windows] or ["(no windows)"]
+        self._win_var.set(win_titles[0])
+        om = tk.OptionMenu(win_row, self._win_var, *win_titles)
+        om.config(bg=SURFACE, fg=TEXT, activebackground=OVERLAY,
+                  activeforeground=TEXT, font=("Segoe UI", 10),
+                  relief="flat", bd=0, width=30, highlightthickness=0)
+        om["menu"].config(bg=SURFACE, fg=TEXT, activebackground=OVERLAY,
+                          activeforeground=TEXT, font=("Segoe UI", 10))
+        om.pack(side="left", padx=(8, 0))
+
+        # Monitor picker
+        self._monitors = _get_monitor_work_areas()
+        self._mon_labels = []
+        for i, m in enumerate(self._monitors, 1):
+            lbl = f"Monitor {i}  {m['width']}×{m['height']}"
+            if m["primary"]:
+                lbl += " ★"
+            self._mon_labels.append(lbl)
+
+        mon_row = tk.Frame(self, bg=BG, padx=20)
+        mon_row.pack(fill="x", pady=(6, 0))
+        tk.Label(mon_row, text="Monitor:", font=("Segoe UI", 10),
+                 bg=BG, fg=SUBTEXT).pack(side="left")
+
+        self._mon_var = tk.StringVar()
+        mon_choices = self._mon_labels or ["(no monitors)"]
+        self._mon_var.set(mon_choices[0])
+        mm = tk.OptionMenu(mon_row, self._mon_var, *mon_choices)
+        mm.config(bg=SURFACE, fg=TEXT, activebackground=OVERLAY,
+                  activeforeground=TEXT, font=("Segoe UI", 10),
+                  relief="flat", bd=0, width=30, highlightthickness=0)
+        mm["menu"].config(bg=SURFACE, fg=TEXT, activebackground=OVERLAY,
+                          activeforeground=TEXT, font=("Segoe UI", 10))
+        mm.pack(side="left", padx=(8, 0))
+
+        # 3×3 snap grid
+        tk.Label(self, text="Position",
+                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT,
+                 pady=10).pack()
+
+        grid_frame = tk.Frame(self, bg=BG, padx=20)
+        grid_frame.pack()
+
+        grid_def = [
+            [("↖",    "tl"),  ("▲ ½",  "th"),  ("↗",    "tr")],
+            [("◀ ½",  "lh"),  ("MAX",  "max"),  ("▶ ½",  "rh")],
+            [("↙",    "bl"),  ("▼ ½",  "bh"),   ("↘",    "br")],
+        ]
+        for r, row in enumerate(grid_def):
+            for c, (label, pos) in enumerate(row):
+                color = GREEN if pos == "max" else TEXT
+                tk.Button(
+                    grid_frame, text=label, width=6,
+                    command=lambda p=pos: self._snap(p),
+                    bg=SURFACE, fg=color,
+                    activebackground=OVERLAY, activeforeground=color,
+                    font=("Segoe UI", 10), relief="flat",
+                    padx=6, pady=7, cursor="hand2", bd=0,
+                ).grid(row=r, column=c, padx=3, pady=3)
+
+        # Thirds row
+        thirds_frame = tk.Frame(self, bg=BG, padx=20, pady=4)
+        thirds_frame.pack()
+        for label, pos in [("L ⅓", "l3"), ("M ⅓", "m3"), ("R ⅓", "r3")]:
+            tk.Button(
+                thirds_frame, text=label, width=6,
+                command=lambda p=pos: self._snap(p),
+                bg=SURFACE, fg=TEXT,
+                activebackground=OVERLAY, activeforeground=TEXT,
+                font=("Segoe UI", 10), relief="flat",
+                padx=6, pady=7, cursor="hand2", bd=0,
+            ).pack(side="left", padx=3)
+
+        tk.Frame(self, bg=BG, height=8).pack()
+
+    def _get_hwnd(self):
+        sel = self._win_var.get()
+        for hwnd, title in self._windows:
+            if title[:55] == sel:
+                return hwnd
+        return None
+
+    def _get_monitor(self):
+        sel = self._mon_var.get()
+        for i, lbl in enumerate(self._mon_labels):
+            if lbl == sel:
+                return self._monitors[i]
+        return self._monitors[0] if self._monitors else None
+
+    def _snap(self, pos: str):
+        hwnd = self._get_hwnd()
+        if not hwnd:
+            messagebox.showerror("Monitor Manager", "No window selected.", parent=self)
+            return
+        m = self._get_monitor()
+        if not m:
+            messagebox.showerror("Monitor Manager", "No monitor found.", parent=self)
+            return
+
+        L, T, W, H = m["left"], m["top"], m["width"], m["height"]
+        hw = W // 2
+        hh = H // 2
+        tw = W // 3
+
+        positions = {
+            "tl":  (L,        T,      hw,       hh),
+            "th":  (L,        T,      W,        hh),
+            "tr":  (L + hw,   T,      W - hw,   hh),
+            "lh":  (L,        T,      hw,       H),
+            "max": (L,        T,      W,        H),
+            "rh":  (L + hw,   T,      W - hw,   H),
+            "bl":  (L,        T + hh, hw,       H - hh),
+            "bh":  (L,        T + hh, W,        H - hh),
+            "br":  (L + hw,   T + hh, W - hw,   H - hh),
+            "l3":  (L,        T,      tw,       H),
+            "m3":  (L + tw,   T,      tw,       H),
+            "r3":  (L + tw*2, T,      W - tw*2, H),
+        }
+
+        x, y, w, h = positions[pos]
+        snap_window_to(hwnd, x, y, w, h)
+
+
 # ── RTSS FPS cap dialog ────────────────────────────────────────────────────────
 class RTSSCapDialog(tk.Toplevel):
     _PRESETS = [0, 30, 60, 120, 144, 165, 240]
@@ -1112,6 +1321,8 @@ class App(tk.Tk):
             font=("Segoe UI", 10), bd=0,
         )
         menu.add_cascade(label="Sound Output", menu=self._sound_menu)
+
+        menu.add_command(label="Snap Window…", command=lambda: SnapWindowDialog(self))
 
         menu.config(postcommand=self._rebuild_misc_submenus)
 
