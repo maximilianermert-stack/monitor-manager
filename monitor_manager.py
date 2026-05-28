@@ -136,7 +136,7 @@ def get_xbox_battery():
     BATTERY_DEVTYPE_GAMEPAD   = 0x00
     BATTERY_TYPE_DISCONNECTED = 0x00
     BATTERY_TYPE_WIRED        = 0x01
-    _LEVELS = ("EMPTY", "LOW", "MED", "FULL")
+    _LEVELS = ("0%", "33%", "67%", "100%")
     try:
         try:
             xinput = ctypes.WinDLL("XInput1_4.dll")
@@ -153,7 +153,7 @@ def get_xbox_battery():
             if info.BatteryType == BATTERY_TYPE_DISCONNECTED:
                 continue
             if info.BatteryType == BATTERY_TYPE_WIRED:
-                return "WIRED"
+                return "USB"
             return _LEVELS[min(info.BatteryLevel, 3)]
     except Exception:
         pass
@@ -1355,11 +1355,7 @@ class App(tk.Tk):
         pwr_text += f"  ·  {ram_used:.1f}/{ram_total} GB"
         self._pwr_lbl.config(text=pwr_text)
 
-        _ctrl_colors = {"FULL": GREEN, "MED": YELLOW, "LOW": RED, "EMPTY": RED, "WIRED": BLUE}
-        if ctrl_battery:
-            self._ctrl_lbl.config(text=ctrl_battery, fg=_ctrl_colors.get(ctrl_battery, TEXT))
-        else:
-            self._ctrl_lbl.config(text="—", fg=SUBTEXT)
+        self._ctrl_lbl.config(text=ctrl_battery if ctrl_battery else "—", fg=TEXT)
 
     # ── Monitor cards ────────────────────────────────────────────────────────
     def refresh(self):
