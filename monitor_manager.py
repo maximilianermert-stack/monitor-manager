@@ -115,6 +115,12 @@ class MEMORYSTATUSEX(ctypes.Structure):
         ("sullAvailExtendedVirtual",ctypes.c_ulonglong),
     ]
 
+class XINPUT_BATTERY_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BatteryType",  ctypes.c_ubyte),
+        ("BatteryLevel", ctypes.c_ubyte),
+    ]
+
 def get_ram_usage():
     """Returns (used_gb, total_gb) for system RAM."""
     mem = MEMORYSTATUSEX()
@@ -123,6 +129,36 @@ def get_ram_usage():
     total = mem.ullTotalPhys / (1024 ** 3)
     used  = (mem.ullTotalPhys - mem.ullAvailPhys) / (1024 ** 3)
     return round(used, 1), round(total)
+
+
+def get_xbox_battery():
+    """Return battery level string for first connected wireless Xbox controller, or None."""
+    BATTERY_DEVTYPE_GAMEPAD   = 0x00
+    BATTERY_TYPE_DISCONNECTED = 0x00
+    BATTERY_TYPE_WIRED        = 0x01
+    _LEVELS = ("EMPTY", "LOW", "MED", "FULL")
+    try:
+        try:
+            xinput = ctypes.WinDLL("XInput1_4.dll")
+        except OSError:
+            xinput = ctypes.WinDLL("xinput1_3.dll")
+        fn = xinput.XInputGetBatteryInformation
+        fn.restype  = ctypes.c_ulong
+        fn.argtypes = [ctypes.c_ulong, ctypes.c_ubyte,
+                       ctypes.POINTER(XINPUT_BATTERY_INFORMATION)]
+        for i in range(4):
+            info = XINPUT_BATTERY_INFORMATION()
+            if fn(i, BATTERY_DEVTYPE_GAMEPAD, ctypes.byref(info)) != 0:
+                continue
+            if info.BatteryType == BATTERY_TYPE_DISCONNECTED:
+                continue
+            if info.BatteryType == BATTERY_TYPE_WIRED:
+                return "WIRED"
+            return _LEVELS[min(info.BatteryLevel, 3)]
+    except Exception:
+        pass
+    return None
+
 
 # ── Temperature reading via bundled TempReader.exe (LHM / C#) ─────────────────
 
@@ -1044,6 +1080,12 @@ class App(tk.Tk):
                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=YELLOW)
         self._pwr_lbl.pack(side="left", padx=(6, 0))
 
+        tk.Label(temp_bar, text="CTRL", font=("Segoe UI", 9, "bold"),
+                 bg=SURFACE, fg=SUBTEXT).pack(side="left", padx=(24, 0))
+        self._ctrl_lbl = tk.Label(temp_bar, text="—",
+                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=SUBTEXT)
+        self._ctrl_lbl.pack(side="left", padx=(6, 0))
+
         # Monitor list
         self.list_frame = tk.Frame(self, bg=BG, padx=16)
         self.list_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -1274,11 +1316,12 @@ class App(tk.Tk):
     def _fetch_temps(self):
         cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total = get_temperatures()
         ram_used, ram_total = get_ram_usage()
+        ctrl_battery = get_xbox_battery()
         hdr = get_hdr_state()
         self.after(0, lambda: self._apply_temps(
             cpu_temp, cpu_load, cpu_power,
             gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
-            ram_used, ram_total,
+            ram_used, ram_total, ctrl_battery,
         ))
         self.after(0, lambda: self._apply_hdr_color(hdr))
         self.after(3000, self._schedule_temp_update)
@@ -1296,7 +1339,7 @@ class App(tk.Tk):
 
     def _apply_temps(self, cpu_temp, cpu_load, cpu_power,
                      gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
-                     ram_used, ram_total):
+                     ram_used, ram_total, ctrl_battery=None):
         cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
         if cpu_load is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
         self._cpu_lbl.config(text=cpu_text)
@@ -1311,6 +1354,12 @@ class App(tk.Tk):
         pwr_text  = f"{sum(pwr_parts):.0f} W" if pwr_parts else "N/A"
         pwr_text += f"  ·  {ram_used:.1f}/{ram_total} GB"
         self._pwr_lbl.config(text=pwr_text)
+
+        _ctrl_colors = {"FULL": GREEN, "MED": YELLOW, "LOW": RED, "EMPTY": RED, "WIRED": BLUE}
+        if ctrl_battery:
+            self._ctrl_lbl.config(text=ctrl_battery, fg=_ctrl_colors.get(ctrl_battery, TEXT))
+        else:
+            self._ctrl_lbl.config(text="—", fg=SUBTEXT)
 
     # ── Monitor cards ────────────────────────────────────────────────────────
     def refresh(self):
