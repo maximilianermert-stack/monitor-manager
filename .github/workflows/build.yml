@@ -31,7 +31,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install PyInstaller and dependencies
-        run: pip install pyinstaller pystray Pillow
+        run: pip install pyinstaller PyQt6 Pillow
 
       - name: Build TempReader (C# / LHM)
         run: |
@@ -54,6 +54,7 @@ jobs:
           --name "MonitorManager"
           --uac-admin
           --icon icon.ico
+          --collect-all PyQt6
           --add-data "tempreader_out;tempreader"
           --add-data "audioswitch_out;audioswitch"
           monitor_manager.py

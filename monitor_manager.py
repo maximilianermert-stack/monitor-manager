@@ -1,11 +1,8 @@
 """
 Monitor Manager
-Run on Windows with Python 3.x — no extra dependencies needed.
 Requires administrator privileges for full hardware access.
 """
 
-import tkinter as tk
-from tkinter import messagebox, simpledialog
 import ctypes
 import ctypes.wintypes
 import winreg
@@ -18,12 +15,16 @@ import tempfile
 import urllib.request
 import shutil
 
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-    _TRAY_AVAILABLE = True
-except ImportError:
-    _TRAY_AVAILABLE = False
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
+    QScrollArea, QVBoxLayout, QHBoxLayout, QSizePolicy,
+    QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
+)
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import (
+    QIcon, QColor, QPixmap, QPainter, QBrush, QFont,
+    QGraphicsDropShadowEffect,
+)
 
 # ── Windows API constants ──────────────────────────────────────────────────────
 MONITORINFOF_PRIMARY        = 0x00000001
@@ -264,14 +265,11 @@ def turn_off_all():
     ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
 
 
-def disable_monitor(device: str, primary: bool) -> bool:
+def disable_monitor(device: str, primary: bool) -> tuple:
+    """Returns (success, error_message)."""
     if primary:
-        messagebox.showwarning(
-            "Monitor Manager",
-            "The primary monitor cannot be disabled.\n"
-            "Set another monitor as primary first."
-        )
-        return False
+        return False, ("The primary monitor cannot be disabled.\n"
+                       "Set another monitor as primary first.")
 
     dm = DEVMODE()
     dm.dmSize       = ctypes.sizeof(DEVMODE)
@@ -283,7 +281,7 @@ def disable_monitor(device: str, primary: bool) -> bool:
         device, ctypes.byref(dm), None, CDS_UPDATEREGISTRY | CDS_NORESET, None
     )
     ctypes.windll.user32.ChangeDisplaySettingsExW(None, None, None, 0, None)
-    return result == DISP_CHANGE_SUCCESSFUL
+    return result == DISP_CHANGE_SUCCESSFUL, ""
 
 
 def enable_monitor(device: str, active_monitors: list) -> bool:
@@ -483,16 +481,17 @@ def toggle_hdr():
     kbe(VK_LWIN, 0, KEYEVENTF_KEYUP, 0)
 
 
-def start_screensaver():
+def start_screensaver() -> str:
+    """Launch screensaver. Returns error string or empty string on success."""
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
             path, _ = winreg.QueryValueEx(key, "SCRNSAVE.EXE")
         if path:
             subprocess.Popen([path, "/s"])
-        else:
-            messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
+            return ""
+        return "No screensaver is configured in Windows Settings."
     except (FileNotFoundError, OSError):
-        messagebox.showinfo("Monitor Manager", "No screensaver is configured in Windows Settings.")
+        return "No screensaver is configured in Windows Settings."
 
 # ── Autostart (Start with Windows) ────────────────────────────────────────────
 # Uses Task Scheduler with "run with highest privileges" so the app
@@ -920,289 +919,549 @@ def apply_update(tmp_exe: str):
         pass
 
 
-# ── System tray icon ───────────────────────────────────────────────────────────
-def _create_tray_image() -> "Image.Image":
-    size = 64
-    img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d    = ImageDraw.Draw(img)
-    # Monitor bezel
-    d.rectangle([4, 10, 60, 46], fill="#89b4fa", outline="#cdd6f4", width=3)
-    # Screen area
-    d.rectangle([9, 15, 55, 41], fill="#1e1e2e")
-    # Stand
-    d.rectangle([29, 46, 35, 54], fill="#cdd6f4")
-    d.rectangle([20, 54, 44, 58], fill="#cdd6f4")
-    return img
+# ── Theme ──────────────────────────────────────────────────────────────────────
+BG      = "#0d0f14"
+SURFACE = "#151820"
+CARD    = "#1c2030"
+BORDER  = "#252a3d"
+ACCENT  = "#7c8cf8"
+TEXT    = "#e2e8f0"
+SUBTEXT = "#64748b"
+GREEN   = "#4ade80"
+RED     = "#f87171"
+AMBER   = "#fbbf24"
+PEACH   = "#fb923c"
+BLUE    = "#60a5fa"
 
-# ── Theme ───────────────────────────────────────────────────────────────────────
-BG      = "#1e1e2e"
-SURFACE = "#313244"
-OVERLAY = "#45475a"
-TEXT    = "#cdd6f4"
-SUBTEXT = "#6c7086"
-RED     = "#f38ba8"
-BLUE    = "#89b4fa"
-GREEN   = "#a6e3a1"
-YELLOW  = "#f9e2af"
-PURPLE  = "#cba6f7"
-PEACH   = "#fab387"
+APP_QSS = f"""
+* {{
+    font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+    font-size: 10pt;
+    outline: none;
+}}
+QMainWindow, QDialog {{ background: {BG}; }}
+QWidget {{ color: {TEXT}; background: transparent; }}
+
+QFrame#statsChip {{
+    background: {CARD};
+    border-radius: 8px;
+    border: 1px solid {BORDER};
+}}
+QFrame#monitorCard {{
+    background: {CARD};
+    border-radius: 10px;
+    border: 1px solid {BORDER};
+}}
+QWidget#scrollContent {{ background: transparent; }}
+QScrollArea {{ border: none; background: transparent; }}
+QScrollBar:vertical {{
+    width: 5px; background: transparent; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {BORDER}; border-radius: 2px; min-height: 24px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    height: 0; background: none;
+}}
+
+QPushButton {{
+    background: {CARD};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 7px 16px;
+}}
+QPushButton:hover  {{ background: #252a3d; border-color: #3a4060; }}
+QPushButton:pressed {{ background: #13172a; }}
+
+QPushButton#btnGreen  {{ color: {GREEN}; border-color: #1e3d2a; }}
+QPushButton#btnGreen:hover  {{ background: #162a1e; border-color: {GREEN}; }}
+QPushButton#btnRed    {{ color: {RED};   border-color: #3d1e1e; }}
+QPushButton#btnRed:hover    {{ background: #2a1616; border-color: {RED}; }}
+QPushButton#btnAmber  {{ color: {AMBER}; border-color: #3d2e1a; }}
+QPushButton#btnAmber:hover  {{ background: #2a2010; border-color: {AMBER}; }}
+QPushButton#btnBlue   {{ color: {BLUE};  border-color: #1e2a3d; }}
+QPushButton#btnBlue:hover   {{ background: #162030; border-color: {BLUE}; }}
+QPushButton#btnAccent {{ color: {ACCENT}; border-color: #2a2a4a; }}
+QPushButton#btnAccent:hover {{ background: #1e1e3a; border-color: {ACCENT}; }}
+
+QMenu {{
+    background: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 4px;
+    color: {TEXT};
+}}
+QMenu::item {{ padding: 7px 22px; border-radius: 5px; margin: 1px 3px; }}
+QMenu::item:selected {{ background: {BORDER}; }}
+QMenu::item:disabled {{ color: {SUBTEXT}; }}
+QMenu::separator {{
+    height: 1px; background: {BORDER}; margin: 4px 10px;
+}}
+QMenu::indicator {{ width: 14px; height: 14px; left: 5px; }}
+
+QLineEdit {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 7px 12px;
+    color: {TEXT};
+    selection-background-color: {ACCENT};
+}}
+QLineEdit:focus {{ border-color: {ACCENT}; }}
+
+QMessageBox {{ background: {BG}; }}
+QMessageBox QLabel {{ color: {TEXT}; }}
+QInputDialog {{ background: {BG}; }}
+"""
 
 
-def make_btn(parent, label, cmd, fg=TEXT):
-    return tk.Button(
-        parent, text=label, command=cmd,
-        bg=SURFACE, fg=fg,
-        activebackground=OVERLAY, activeforeground=fg,
-        font=("Segoe UI", 10), relief="flat",
-        padx=12, pady=6, cursor="hand2", bd=0,
-    )
+# ── Tray icon (drawn with QPainter — no Pillow dependency) ─────────────────────
+def _make_tray_icon() -> QIcon:
+    px = QPixmap(64, 64)
+    px.fill(QColor(0, 0, 0, 0))
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    # Monitor body
+    p.setBrush(QBrush(QColor(ACCENT)))
+    p.drawRoundedRect(4, 8, 56, 38, 5, 5)
+    # Screen
+    p.setBrush(QBrush(QColor(BG)))
+    p.drawRoundedRect(9, 13, 46, 28, 3, 3)
+    # Stand neck
+    p.setBrush(QBrush(QColor(ACCENT)))
+    p.drawRect(28, 46, 8, 8)
+    # Stand base
+    p.drawRoundedRect(18, 54, 28, 6, 3, 3)
+    p.end()
+    return QIcon(px)
 
-# ── RTSS FPS cap dialog ────────────────────────────────────────────────────────
-class RTSSCapDialog(tk.Toplevel):
+
+# ── Stats chip widget ───────────────────────────────────────────────────────────
+class StatsChip(QFrame):
+    def __init__(self, label: str, value_color: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statsChip")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(3)
+
+        name_lbl = QLabel(label)
+        name_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 8pt;")
+
+        self._val = QLabel("—")
+        self._val.setStyleSheet(
+            f"color: {value_color}; font-size: 11pt; font-weight: 700;"
+        )
+        lay.addWidget(name_lbl)
+        lay.addWidget(self._val)
+
+    def set_value(self, text: str):
+        self._val.setText(text)
+
+
+# ── Monitor card widgets ────────────────────────────────────────────────────────
+class MonitorCard(QFrame):
+    sig_disable      = pyqtSignal(str, bool)
+    sig_make_primary = pyqtSignal(str)
+
+    def __init__(self, mon: dict, parent=None):
+        super().__init__(parent)
+        self.setObjectName("monitorCard")
+        self._build(mon)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 70))
+        self.setGraphicsEffect(shadow)
+
+    def _build(self, mon: dict):
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        accent = QFrame()
+        accent.setFixedWidth(3)
+        accent.setStyleSheet(
+            f"background:{ACCENT}; border-radius:0;" if mon["primary"]
+            else f"background:{BORDER}; border-radius:0;"
+        )
+        row.addWidget(accent)
+
+        body = QWidget()
+        body.setObjectName("cardContent")
+        col = QVBoxLayout(body)
+        col.setContentsMargins(16, 12, 16, 12)
+        col.setSpacing(6)
+
+        # Title row
+        top = QHBoxLayout()
+        top.setSpacing(8)
+
+        title = QLabel(f"Monitor {mon['index']}")
+        title.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        top.addWidget(title)
+
+        badge = QLabel("Primary" if mon["primary"] else "Secondary")
+        badge.setStyleSheet(
+            f"color:{ACCENT}; font-size:9pt;" if mon["primary"]
+            else f"color:{SUBTEXT}; font-size:9pt;"
+        )
+        top.addWidget(badge)
+        top.addStretch()
+
+        if not mon["primary"]:
+            b = QPushButton("Make Primary")
+            b.setObjectName("btnGreen")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda: self.sig_make_primary.emit(mon["device"]))
+            top.addWidget(b)
+
+        bd = QPushButton("Disable")
+        bd.setObjectName("btnAmber")
+        bd.setCursor(Qt.CursorShape.PointingHandCursor)
+        bd.clicked.connect(
+            lambda: self.sig_disable.emit(mon["device"], mon["primary"])
+        )
+        top.addWidget(bd)
+        col.addLayout(top)
+
+        # Info row
+        info = QHBoxLayout()
+        res = QLabel(f"{mon['width']} × {mon['height']}")
+        res.setStyleSheet("font-size: 10pt; font-weight: 700;")
+        info.addWidget(res)
+        det = QLabel(f"  ·  ({mon['left']}, {mon['top']})  ·  {mon['device']}")
+        det.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        info.addWidget(det)
+        info.addStretch()
+        col.addLayout(info)
+
+        row.addWidget(body)
+
+
+class DisabledCard(QFrame):
+    sig_enable = pyqtSignal(str, list)
+
+    def __init__(self, dev: dict, active: list, parent=None):
+        super().__init__(parent)
+        self.setObjectName("monitorCard")
+        self._build(dev, active)
+
+    def _build(self, dev: dict, active: list):
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        accent = QFrame()
+        accent.setFixedWidth(3)
+        accent.setStyleSheet(f"background:{SUBTEXT}; border-radius:0;")
+        row.addWidget(accent)
+
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(16, 12, 16, 12)
+        col.setSpacing(6)
+
+        top = QHBoxLayout()
+        title = QLabel(dev["device"])
+        title.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        top.addWidget(title)
+        badge = QLabel("Disabled")
+        badge.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        top.addWidget(badge)
+        top.addStretch()
+
+        be = QPushButton("Enable")
+        be.setObjectName("btnGreen")
+        be.setCursor(Qt.CursorShape.PointingHandCursor)
+        be.clicked.connect(lambda: self.sig_enable.emit(dev["device"], active))
+        top.addWidget(be)
+        col.addLayout(top)
+
+        desc = QLabel(dev["description"])
+        desc.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        col.addWidget(desc)
+
+        row.addWidget(body)
+
+
+# ── Background worker ───────────────────────────────────────────────────────────
+class TempWorker(QThread):
+    ready = pyqtSignal(tuple, tuple, object, bool)
+
+    def run(self):
+        temps   = get_temperatures()
+        ram     = get_ram_usage()
+        battery = get_xbox_battery()
+        hdr     = get_hdr_state()
+        self.ready.emit(temps, ram, battery, hdr)
+
+
+# ── RTSS FPS cap dialog ─────────────────────────────────────────────────────────
+class RTSSCapDialog(QDialog):
     _PRESETS = [0, 30, 60, 120, 144, 165, 240]
 
-    def __init__(self, parent):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.title("RTSS FPS Cap")
-        self.configure(bg=BG)
-        self.resizable(False, False)
-        self.grab_set()
+        self.setWindowTitle("RTSS FPS Cap")
+        self.setModal(True)
+        self.setMinimumWidth(400)
 
         current = get_rtss_fps_limit()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(16)
 
-        tk.Label(self, text="Global FPS Cap (RTSS)",
-                 font=("Segoe UI", 11, "bold"), bg=BG, fg=TEXT,
-                 padx=20, pady=14).pack()
+        title = QLabel("Global FPS Cap")
+        title.setStyleSheet("font-size:13pt; font-weight:700;")
+        lay.addWidget(title)
 
         # Preset buttons
-        btn_row = tk.Frame(self, bg=BG, padx=20)
-        btn_row.pack(fill="x")
+        presets_row = QHBoxLayout()
+        presets_row.setSpacing(6)
         for fps in self._PRESETS:
-            label  = "Unlimited" if fps == 0 else f"{fps}"
-            is_cur = fps == current
-            fg     = GREEN if is_cur else TEXT
-            tk.Button(
-                btn_row, text=label, width=8,
-                command=lambda v=fps: self._apply(v),
-                bg=SURFACE, fg=fg,
-                activebackground=OVERLAY, activeforeground=fg,
-                font=("Segoe UI", 10), relief="flat",
-                padx=8, pady=6, cursor="hand2", bd=0,
-            ).pack(side="left", padx=(0, 6), pady=(0, 12))
+            lbl = "Unlimited" if fps == 0 else str(fps)
+            btn = QPushButton(lbl)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            if fps == current:
+                btn.setObjectName("btnGreen")
+            btn.clicked.connect(lambda _, v=fps: self._apply(v))
+            presets_row.addWidget(btn)
+        lay.addLayout(presets_row)
 
-        # Custom entry
-        row = tk.Frame(self, bg=BG, padx=20, pady=4)
-        row.pack(fill="x")
-        tk.Label(row, text="Custom:", font=("Segoe UI", 10),
-                 bg=BG, fg=SUBTEXT).pack(side="left")
-        self._entry = tk.Entry(
-            row, width=7,
-            bg=SURFACE, fg=TEXT, insertbackground=TEXT,
-            font=("Segoe UI", 10), relief="flat", bd=4,
-        )
-        self._entry.pack(side="left", padx=(8, 8))
+        # Custom row
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(8)
+        custom_lbl = QLabel("Custom:")
+        custom_lbl.setStyleSheet(f"color:{SUBTEXT};")
+        custom_row.addWidget(custom_lbl)
+
+        self._entry = QLineEdit()
+        self._entry.setPlaceholderText("e.g. 90")
+        self._entry.setFixedWidth(80)
         if current not in self._PRESETS and current > 0:
-            self._entry.insert(0, str(current))
-        tk.Button(
-            row, text="Set",
-            command=self._apply_custom,
-            bg=SURFACE, fg=BLUE,
-            activebackground=OVERLAY, activeforeground=BLUE,
-            font=("Segoe UI", 10), relief="flat",
-            padx=10, pady=5, cursor="hand2", bd=0,
-        ).pack(side="left")
+            self._entry.setText(str(current))
+        custom_row.addWidget(self._entry)
 
-        tk.Label(self, text=f"Current: {'Unlimited' if current == 0 else f'{current} FPS'}",
-                 font=("Segoe UI", 9), bg=BG, fg=SUBTEXT, pady=10).pack()
+        set_btn = QPushButton("Set")
+        set_btn.setObjectName("btnAccent")
+        set_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        set_btn.clicked.connect(self._apply_custom)
+        custom_row.addWidget(set_btn)
+        custom_row.addStretch()
+        lay.addLayout(custom_row)
+
+        cur_text = "Unlimited" if current == 0 else f"{current} FPS"
+        cur_lbl = QLabel(f"Current: {cur_text}")
+        cur_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        lay.addWidget(cur_lbl)
 
     def _apply(self, fps: int):
         if set_rtss_fps_limit(fps):
-            self.destroy()
+            self.accept()
         else:
-            messagebox.showerror("Monitor Manager", "Could not write RTSS profile.", parent=self)
+            QMessageBox.critical(self, "Monitor Manager",
+                                 "Could not write RTSS profile.")
 
     def _apply_custom(self):
         try:
-            fps = int(self._entry.get())
+            fps = int(self._entry.text())
             if fps < 0:
                 raise ValueError
             self._apply(fps)
         except ValueError:
-            messagebox.showerror("Monitor Manager", "Enter a valid number (0 = unlimited).", parent=self)
+            QMessageBox.critical(self, "Monitor Manager",
+                                 "Enter a valid number (0 = unlimited).")
 
 
-# ── Application ─────────────────────────────────────────────────────────────────
-class App(tk.Tk):
+# ── Main window ─────────────────────────────────────────────────────────────────
+class MainWindow(QMainWindow):
+    _temps_signal = pyqtSignal(tuple, tuple, object, bool)
+
     def __init__(self):
         super().__init__()
-        self.title("Monitor Manager")
-        self.configure(bg=BG)
-        self.resizable(True, True)
-        self.minsize(560, 280)
-        self._tray_icon    = None
-        self._autostart_var = None   # set in _build_ui after tk.BooleanVar is available
-        self._build_ui()
-        self.refresh()
-        self._schedule_temp_update()
-        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
-        if _TRAY_AVAILABLE:
-            self._start_tray()
-        # Start minimized to tray if launched with --minimized flag
+        self.setWindowTitle("Monitor Manager")
+        self.setMinimumSize(620, 320)
+        self.resize(760, 520)
+
+        self._worker  = TempWorker()
+        self._worker.ready.connect(self._apply_temps)
+
+        self._setup_ui()
+        self._setup_tray()
+        self._apply_dark_titlebar()
+
+        self.refresh_monitors()
+        self._worker.start()
+
+        self._temp_timer = QTimer(self)
+        self._temp_timer.timeout.connect(self._kick_worker)
+        self._temp_timer.start(3000)
+
         if "--minimized" in sys.argv:
-            self.after(150, self.withdraw)
+            QTimer.singleShot(0, self.hide)
 
-    def _build_ui(self):
-        # ── Header ───────────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=BG, padx=20, pady=14)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text="Monitor Manager",
-                 font=("Segoe UI", 15, "bold"), bg=BG, fg=TEXT).pack(side="left")
-        tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x")
+    # ── Dark title bar (Windows 11) ───────────────────────────────────────────
+    def _apply_dark_titlebar(self):
+        try:
+            hwnd  = int(self.winId())
+            value = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 20, ctypes.byref(value), ctypes.sizeof(value)
+            )
+        except Exception:
+            pass
 
-        # ── Stats chips ──────────────────────────────────────────────────────
-        stats_bar = tk.Frame(self, bg=BG, padx=16, pady=10)
-        stats_bar.pack(fill="x")
-        stats_bar.columnconfigure((0, 1, 2, 3), weight=1, uniform="chip")
+    # ── UI setup ─────────────────────────────────────────────────────────────
+    def _setup_ui(self):
+        central = QWidget()
+        central.setObjectName("central")
+        central.setStyleSheet(f"background:{BG};")
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        def _chip(col, name, color):
-            f = tk.Frame(stats_bar, bg=SURFACE, padx=12, pady=8)
-            f.grid(row=0, column=col, sticky="ew",
-                   padx=(0, 8) if col < 3 else 0)
-            tk.Label(f, text=name, font=("Segoe UI", 8),
-                     bg=SURFACE, fg=SUBTEXT).pack(anchor="w")
-            lbl = tk.Label(f, text="—", font=("Segoe UI", 11, "bold"),
-                           bg=SURFACE, fg=color)
-            lbl.pack(anchor="w")
-            return lbl
+        # ── Header ────────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setStyleSheet(f"background:{BG};")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(20, 14, 20, 14)
+        title = QLabel("Monitor Manager")
+        title.setStyleSheet("font-size:15pt; font-weight:700;")
+        hl.addWidget(title)
+        hl.addStretch()
+        root.addWidget(hdr)
 
-        self._cpu_lbl  = _chip(0, "CPU",        PEACH)
-        self._gpu_lbl  = _chip(1, "GPU",        BLUE)
-        self._pwr_lbl  = _chip(2, "System",     YELLOW)
-        self._ctrl_lbl = _chip(3, "Controller", TEXT)
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setStyleSheet(f"background:{BORDER}; border:none; max-height:1px;")
+        root.addWidget(sep1)
 
-        # ── Monitor list ─────────────────────────────────────────────────────
-        self.list_frame = tk.Frame(self, bg=BG, padx=16)
-        self.list_frame.pack(fill="both", expand=True, pady=(12, 0))
+        # ── Stats chips ───────────────────────────────────────────────────
+        stats_w = QWidget()
+        stats_w.setStyleSheet(f"background:{BG};")
+        sl = QHBoxLayout(stats_w)
+        sl.setContentsMargins(16, 10, 16, 10)
+        sl.setSpacing(8)
 
-        # ── Divider ──────────────────────────────────────────────────────────
-        tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x", pady=(8, 0))
+        self._chip_cpu  = StatsChip("CPU",        PEACH)
+        self._chip_gpu  = StatsChip("GPU",        BLUE)
+        self._chip_sys  = StatsChip("System",     AMBER)
+        self._chip_ctrl = StatsChip("Controller", TEXT)
 
-        # ── Bottom bar ───────────────────────────────────────────────────────
-        bar = tk.Frame(self, bg=BG, padx=16, pady=12)
-        bar.pack(fill="x")
-        make_btn(bar, "Turn Off All", turn_off_all,      RED ).pack(side="left", padx=(0, 6))
-        make_btn(bar, "Screensaver",  start_screensaver, BLUE).pack(side="left", padx=(0, 6))
+        for chip in (self._chip_cpu, self._chip_gpu, self._chip_sys, self._chip_ctrl):
+            chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            sl.addWidget(chip)
 
-        self._hdr_btn = make_btn(bar, "HDR", self._on_toggle_hdr, RED)
-        self._hdr_btn.pack(side="left", padx=(0, 6))
+        root.addWidget(stats_w)
 
-        self._build_misc_menu(bar)
+        # ── Monitor list (scrollable) ─────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        make_btn(bar, "↻ Refresh", self.refresh, GREEN).pack(side="right")
+        self._scroll_content = QWidget()
+        self._scroll_content.setObjectName("scrollContent")
+        self._monitor_layout = QVBoxLayout(self._scroll_content)
+        self._monitor_layout.setContentsMargins(16, 12, 16, 12)
+        self._monitor_layout.setSpacing(10)
+        self._monitor_layout.addStretch()
+
+        self._scroll.setWidget(self._scroll_content)
+        root.addWidget(self._scroll, 1)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet(f"background:{BORDER}; border:none; max-height:1px;")
+        root.addWidget(sep2)
+
+        # ── Bottom bar ────────────────────────────────────────────────────
+        bar = QWidget()
+        bar.setStyleSheet(f"background:{BG};")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(16, 12, 16, 12)
+        bl.setSpacing(6)
+
+        def _btn(label, obj_name, slot):
+            b = QPushButton(label)
+            b.setObjectName(obj_name)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(slot)
+            return b
+
+        bl.addWidget(_btn("Turn Off All", "btnRed",  self._on_turn_off))
+        bl.addWidget(_btn("Screensaver",  "btnBlue", self._on_screensaver))
+
+        self._hdr_btn = QPushButton("HDR")
+        self._hdr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hdr_btn.clicked.connect(self._on_toggle_hdr)
+        bl.addWidget(self._hdr_btn)
+
+        self._misc_btn = QPushButton("Misc  ▾")
+        self._misc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._misc_btn.clicked.connect(self._show_misc_menu)
+        bl.addWidget(self._misc_btn)
+
+        bl.addStretch()
+
+        bl.addWidget(_btn("↻  Refresh", "btnGreen", self.refresh_monitors))
+        root.addWidget(bar)
+
+        self._build_misc_menu()
         self._refresh_hdr_btn()
 
-    def _build_misc_menu(self, bar):
-        self._autostart_var = tk.BooleanVar(value=get_autostart())
+    # ── Misc popup menu ───────────────────────────────────────────────────────
+    def _build_misc_menu(self):
+        m = QMenu(self)
 
-        misc_btn = tk.Menubutton(
-            bar, text="Misc ▾",
-            bg=SURFACE, fg=TEXT,
-            activebackground=OVERLAY, activeforeground=TEXT,
-            font=("Segoe UI", 10), relief="flat",
-            padx=12, pady=6, cursor="hand2", bd=0,
-            indicatoron=False,
+        m.addAction("Extend displays",
+            lambda: subprocess.Popen(["DisplaySwitch.exe", "/extend"]))
+        m.addAction("Duplicate displays",
+            lambda: subprocess.Popen(["DisplaySwitch.exe", "/clone"]))
+        m.addAction("PC screen only",
+            lambda: subprocess.Popen(["DisplaySwitch.exe", "/internal"]))
+        m.addAction("Second screen only",
+            lambda: subprocess.Popen(["DisplaySwitch.exe", "/external"]))
+        m.addSeparator()
+
+        self._rate_menu  = m.addMenu("Refresh Rate")
+        self._rate_menu.aboutToShow.connect(self._rebuild_rate_menu)
+        m.addAction("RTSS FPS Cap…", self._on_rtss_cap)
+
+        self._sound_menu = m.addMenu("Sound Output")
+        self._sound_menu.aboutToShow.connect(self._rebuild_sound_menu)
+
+        m.addAction("Snipping Tool",
+            lambda: subprocess.Popen(["SnippingTool.exe"]))
+        m.addSeparator()
+        m.addAction("Open Display Settings",
+            lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
+        m.addSeparator()
+
+        self._autostart_action = m.addAction("Start with Windows")
+        self._autostart_action.setCheckable(True)
+        self._autostart_action.setChecked(get_autostart())
+        self._autostart_action.triggered.connect(self._on_toggle_autostart)
+        m.addSeparator()
+        m.addAction("Check for Updates", self._on_check_update)
+
+        self._misc_menu = m
+
+    def _show_misc_menu(self):
+        pos = self._misc_btn.mapToGlobal(
+            QPoint(0, self._misc_btn.height() + 2)
         )
-
-        menu = tk.Menu(
-            misc_btn, tearoff=0,
-            bg=SURFACE, fg=TEXT,
-            activebackground=OVERLAY, activeforeground=TEXT,
-            font=("Segoe UI", 10), bd=0,
-        )
-
-        menu.add_command(label="Extend displays",
-                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/extend"]))
-        menu.add_command(label="Duplicate displays",
-                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/clone"]))
-        menu.add_command(label="PC screen only",
-                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/internal"]))
-        menu.add_command(label="Second screen only",
-                         command=lambda: subprocess.Popen(["DisplaySwitch.exe", "/external"]))
-        menu.add_separator()
-
-        # FPS Limit (refresh rate) cascade
-        self._rate_menu = tk.Menu(
-            menu, tearoff=0,
-            bg=SURFACE, fg=TEXT,
-            activebackground=OVERLAY, activeforeground=TEXT,
-            font=("Segoe UI", 10), bd=0,
-        )
-        menu.add_cascade(label="Refresh Rate", menu=self._rate_menu)
-        menu.add_command(label="RTSS FPS Cap…", command=self._on_rtss_cap)
-
-        # Sound output cascade
-        self._sound_menu = tk.Menu(
-            menu, tearoff=0,
-            bg=SURFACE, fg=TEXT,
-            activebackground=OVERLAY, activeforeground=TEXT,
-            font=("Segoe UI", 10), bd=0,
-        )
-        menu.add_cascade(label="Sound Output", menu=self._sound_menu)
-
-        menu.add_command(label="Snipping Tool",
-                         command=lambda: subprocess.Popen(["SnippingTool.exe"]))
-
-        menu.config(postcommand=self._rebuild_misc_submenus)
-
-        menu.add_separator()
-        menu.add_command(label="Open Display Settings",
-                         command=lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
-        menu.add_separator()
-        menu.add_checkbutton(label="Start with Windows",
-                             variable=self._autostart_var,
-                             command=self._on_toggle_autostart)
-        menu.add_separator()
-        menu.add_command(label="Check for Updates", command=self._on_check_update)
-
-        misc_btn.config(menu=menu)
-        misc_btn.pack(side="left")
-
-    def _rebuild_misc_submenus(self):
-        self._rebuild_rate_menu()
-        self._rebuild_sound_menu()
-
-    def _rebuild_sound_menu(self):
-        self._sound_menu.delete(0, "end")
-        devices = get_audio_outputs()
-        if not devices:
-            self._sound_menu.add_command(label="    No devices found", state="disabled")
-            return
-        current = get_default_audio_output_id().lower()
-        for name, device_id in devices:
-            is_cur = device_id.lower() == current
-            label  = f"✓  {name}" if is_cur else f"    {name}"
-            self._sound_menu.add_command(
-                label=label,
-                command=lambda d=device_id: self._set_audio_output(d),
-            )
-
-    def _set_audio_output(self, device_id: str):
-        # Run in thread so PowerShell fallback doesn't freeze the UI
-        threading.Thread(
-            target=self._do_set_audio, args=(device_id,), daemon=True
-        ).start()
-
-    def _do_set_audio(self, device_id: str):
-        ok, err = set_default_audio_output(device_id)
-        if not ok:
-            self.after(0, lambda: messagebox.showerror(
-                "Audio switch failed",
-                f"Could not switch audio output.\n\n{err}" if err else
-                "Could not switch audio output."
-            ))
+        self._misc_menu.exec(pos)
 
     def _rebuild_rate_menu(self):
-        self._rate_menu.delete(0, "end")
+        self._rate_menu.clear()
         monitors = get_active_monitors()
         if not monitors:
             return
@@ -1210,245 +1469,236 @@ class App(tk.Tk):
         device  = primary["device"]
         current = get_current_refresh_rate(device)
         for hz in get_available_refresh_rates(device):
-            label = f"✓  {hz} Hz" if hz == current else f"    {hz} Hz"
-            self._rate_menu.add_command(
-                label=label,
-                command=lambda h=hz: self._apply_rate(device, h),
+            a = self._rate_menu.addAction(
+                f"✓  {hz} Hz" if hz == current else f"    {hz} Hz"
             )
-        self._rate_menu.add_separator()
-        self._rate_menu.add_command(label="    Custom…", command=lambda: self._custom_rate(device))
+            a.triggered.connect(lambda _, h=hz: self._apply_rate(device, h))
+        self._rate_menu.addSeparator()
+        self._rate_menu.addAction("Custom…",
+            lambda: self._custom_rate(device))
 
-    def _apply_rate(self, device: str, hz: int):
-        if not set_refresh_rate(device, hz):
-            messagebox.showerror("Monitor Manager", f"Could not set {hz} Hz on {device}.")
-
-    def _custom_rate(self, device: str):
-        hz = simpledialog.askinteger(
-            "Refresh Rate", "Enter refresh rate (Hz):",
-            parent=self, minvalue=1, maxvalue=500,
-        )
-        if hz:
-            self._apply_rate(device, hz)
-
-    def _on_rtss_cap(self):
-        if not _find_rtss_path():
-            messagebox.showerror("Monitor Manager",
-                                 "RTSS not found.\nMake sure RivaTuner Statistics Server is installed.")
+    def _rebuild_sound_menu(self):
+        self._sound_menu.clear()
+        devices = get_audio_outputs()
+        if not devices:
+            a = self._sound_menu.addAction("No devices found")
+            a.setEnabled(False)
             return
-        RTSSCapDialog(self)
+        current = get_default_audio_output_id().lower()
+        for name, did in devices:
+            label = f"✓  {name}" if did.lower() == current else f"    {name}"
+            a = self._sound_menu.addAction(label)
+            a.triggered.connect(lambda _, d=did: self._set_audio_output(d))
 
-    # ── System tray ──────────────────────────────────────────────────────────
-    def _start_tray(self):
-        img  = _create_tray_image()
-        menu = pystray.Menu(
-            pystray.MenuItem("Show Monitor Manager", self._show_from_tray, default=True),
-            pystray.MenuItem(
-                "Start with Windows",
-                self._toggle_autostart,
-                checked=lambda item: get_autostart(),
-            ),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Exit", self._quit_app),
-        )
-        self._tray_icon = pystray.Icon("MonitorManager", img, "Monitor Manager", menu)
-        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+    # ── Tray ──────────────────────────────────────────────────────────────────
+    def _setup_tray(self):
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(_make_tray_icon())
+        self._tray.setToolTip("Monitor Manager")
 
-    def _hide_to_tray(self):
-        self.withdraw()
+        tray_menu = QMenu()
+        tray_menu.addAction("Show Monitor Manager", self._show_window)
+        tray_menu.addSeparator()
+        tray_menu.addAction("Exit", self._quit)
 
-    def _show_from_tray(self, icon=None, item=None):
-        self.after(0, self._do_show)
+        self._tray.setContextMenu(tray_menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
 
-    def _do_show(self):
-        self.deiconify()
-        self.lift()
-        self.focus_force()
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._show_window()
 
-    def _on_toggle_autostart(self):
-        set_autostart(self._autostart_var.get())
+    def _show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._apply_dark_titlebar()
 
-    def _on_check_update(self):
-        threading.Thread(target=self._do_update, daemon=True).start()
+    def closeEvent(self, event):
+        event.ignore()
+        self.hide()
 
-    def _do_update(self):
-        self.after(0, lambda: self._set_title("Monitor Manager  —  Downloading update…"))
-        ok, result = download_update()
-        if ok:
-            # Switch back to main thread to show dialog, THEN launch batch and quit
-            self.after(0, lambda: self._finish_update(result))
-        else:
-            self.after(0, lambda: (
-                self._set_title("Monitor Manager"),
-                messagebox.showerror("Update failed", result or "Could not download update."),
-            ))
+    def _quit(self):
+        self._tray.hide()
+        QApplication.quit()
 
-    def _finish_update(self, tmp_exe: str):
-        self._set_title("Monitor Manager")
-        messagebox.showinfo("Update", "Update downloaded!\nThe app will now restart.")
-        apply_update(tmp_exe)   # launch batch RIGHT before quitting
-        self._quit_app()
+    # ── Temperature polling ───────────────────────────────────────────────────
+    def _kick_worker(self):
+        if not self._worker.isRunning():
+            self._worker = TempWorker()
+            self._worker.ready.connect(self._apply_temps)
+            self._worker.start()
 
-    def _set_title(self, title: str):
-        self.title(title)
+    def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool):
+        (cpu_temp, cpu_load, cpu_power,
+         gpu_temp, gpu_load, gpu_power,
+         gpu_mem_used, gpu_mem_total) = temps
+        ram_used, ram_total = ram
 
-    def _toggle_autostart(self, icon=None, item=None):
-        """Called from tray menu."""
-        new = not get_autostart()
-        set_autostart(new)
-        if self._autostart_var is not None:
-            self._autostart_var.set(new)
-
-    def _quit_app(self, icon=None, item=None):
-        if self._tray_icon:
-            self._tray_icon.stop()
-        self.after(0, self.destroy)
-
-    # ── Temperature polling (background thread) ──────────────────────────────
-    def _schedule_temp_update(self):
-        threading.Thread(target=self._fetch_temps, daemon=True).start()
-
-    def _fetch_temps(self):
-        cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total = get_temperatures()
-        ram_used, ram_total = get_ram_usage()
-        ctrl_battery = get_xbox_battery()
-        hdr = get_hdr_state()
-        self.after(0, lambda: self._apply_temps(
-            cpu_temp, cpu_load, cpu_power,
-            gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
-            ram_used, ram_total, ctrl_battery,
-        ))
-        self.after(0, lambda: self._apply_hdr_color(hdr))
-        self.after(3000, self._schedule_temp_update)
-
-    def _refresh_hdr_btn(self):
-        self._apply_hdr_color(get_hdr_state())
-
-    def _apply_hdr_color(self, hdr_on: bool):
-        color = GREEN if hdr_on else RED
-        self._hdr_btn.config(fg=color, activeforeground=color)
-
-    def _on_toggle_hdr(self):
-        toggle_hdr()
-        self.after(600, self._refresh_hdr_btn)
-
-    def _apply_temps(self, cpu_temp, cpu_load, cpu_power,
-                     gpu_temp, gpu_load, gpu_power, gpu_mem_used, gpu_mem_total,
-                     ram_used, ram_total, ctrl_battery=None):
         cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
-        if cpu_load is not None: cpu_text += f"  ·  {cpu_load:.0f}%"
-        self._cpu_lbl.config(text=cpu_text)
+        if cpu_load is not None:
+            cpu_text += f"  ·  {cpu_load:.0f}%"
+        self._chip_cpu.set_value(cpu_text)
 
         gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
-        if gpu_load is not None: gpu_text += f"  ·  {gpu_load:.0f}%"
+        if gpu_load is not None:
+            gpu_text += f"  ·  {gpu_load:.0f}%"
         if gpu_mem_used is not None and gpu_mem_total is not None:
             gpu_text += f"  ·  {gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB"
-        self._gpu_lbl.config(text=gpu_text)
+        self._chip_gpu.set_value(gpu_text)
 
         pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
         pwr_text  = f"{sum(pwr_parts):.0f} W" if pwr_parts else "N/A"
         pwr_text += f"  ·  {ram_used:.1f}/{ram_total} GB"
-        self._pwr_lbl.config(text=pwr_text)
+        self._chip_sys.set_value(pwr_text)
 
-        self._ctrl_lbl.config(text=ctrl_battery if ctrl_battery else "—", fg=TEXT)
+        self._chip_ctrl.set_value(battery if battery else "—")
+        self._apply_hdr_color(hdr)
 
-    # ── Monitor cards ────────────────────────────────────────────────────────
-    def refresh(self):
-        for w in self.list_frame.winfo_children():
-            w.destroy()
+    def _refresh_hdr_btn(self):
+        hdr = get_hdr_state()
+        self._apply_hdr_color(hdr)
+
+    def _apply_hdr_color(self, hdr_on: bool):
+        name = "btnGreen" if hdr_on else "btnRed"
+        if self._hdr_btn.objectName() != name:
+            self._hdr_btn.setObjectName(name)
+            self._hdr_btn.style().unpolish(self._hdr_btn)
+            self._hdr_btn.style().polish(self._hdr_btn)
+
+    # ── Monitor cards ─────────────────────────────────────────────────────────
+    def refresh_monitors(self):
+        # Remove all widgets except the bottom stretch
+        while self._monitor_layout.count() > 1:
+            item = self._monitor_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
         active   = get_active_monitors()
         disabled = get_disabled_devices({m["device"] for m in active})
 
         if not active and not disabled:
-            tk.Label(self.list_frame, text="No monitors detected.",
-                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 10), pady=24).pack()
+            lbl = QLabel("No monitors detected.")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet(f"color:{SUBTEXT}; padding:32px;")
+            self._monitor_layout.insertWidget(0, lbl)
             return
 
+        idx = 0
         for mon in active:
-            self._active_card(mon)
+            card = MonitorCard(mon)
+            card.sig_disable.connect(self._on_disable)
+            card.sig_make_primary.connect(self._on_make_primary)
+            self._monitor_layout.insertWidget(idx, card)
+            idx += 1
+
         for dev in disabled:
-            self._disabled_card(dev, active)
+            card = DisabledCard(dev, active)
+            card.sig_enable.connect(self._on_enable)
+            self._monitor_layout.insertWidget(idx, card)
+            idx += 1
 
-    def _active_card(self, mon: dict):
-        outer = tk.Frame(self.list_frame, bg=SURFACE)
-        outer.pack(fill="x", pady=(0, 8))
+    # ── Actions ───────────────────────────────────────────────────────────────
+    def _on_turn_off(self):
+        turn_off_all()
 
-        # Colored left accent strip
-        tk.Frame(outer, bg=BLUE if mon["primary"] else OVERLAY,
-                 width=3).pack(side="left", fill="y")
+    def _on_screensaver(self):
+        err = start_screensaver()
+        if err:
+            QMessageBox.information(self, "Monitor Manager", err)
 
-        card = tk.Frame(outer, bg=SURFACE, padx=14, pady=10)
-        card.pack(side="left", fill="both", expand=True)
-
-        top = tk.Frame(card, bg=SURFACE)
-        top.pack(fill="x")
-
-        tk.Label(top, text=f"Monitor {mon['index']}",
-                 font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-        tk.Label(top, text="  Primary" if mon["primary"] else "  Secondary",
-                 font=("Segoe UI", 9), bg=SURFACE,
-                 fg=BLUE if mon["primary"] else SUBTEXT).pack(side="left")
-
-        make_btn(top, "Disable",
-                 lambda d=mon["device"], p=mon["primary"]: self._on_disable(d, p),
-                 YELLOW).pack(side="right", padx=(4, 0))
-        if not mon["primary"]:
-            make_btn(top, "Make Primary",
-                     lambda d=mon["device"]: self._on_make_primary(d),
-                     GREEN).pack(side="right")
-
-        info_row = tk.Frame(card, bg=SURFACE)
-        info_row.pack(fill="x", pady=(6, 0))
-        tk.Label(info_row, text=f"{mon['width']} × {mon['height']}",
-                 font=("Segoe UI", 10, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-        tk.Label(info_row,
-                 text=f"  ·  ({mon['left']}, {mon['top']})  ·  {mon['device']}",
-                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(side="left")
-
-    def _disabled_card(self, dev: dict, active_monitors: list):
-        outer = tk.Frame(self.list_frame, bg=SURFACE)
-        outer.pack(fill="x", pady=(0, 8))
-
-        tk.Frame(outer, bg=OVERLAY, width=3).pack(side="left", fill="y")
-
-        card = tk.Frame(outer, bg=SURFACE, padx=14, pady=10)
-        card.pack(side="left", fill="both", expand=True)
-
-        top = tk.Frame(card, bg=SURFACE)
-        top.pack(fill="x")
-
-        tk.Label(top, text=dev["device"],
-                 font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-        tk.Label(top, text="  Disabled",
-                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(side="left")
-
-        make_btn(top, "Enable",
-                 lambda d=dev["device"], a=active_monitors: self._on_enable(d, a),
-                 GREEN).pack(side="right")
-
-        tk.Label(card, text=dev["description"],
-                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(anchor="w", pady=(5, 0))
+    def _on_toggle_hdr(self):
+        toggle_hdr()
+        QTimer.singleShot(600, self._refresh_hdr_btn)
 
     def _on_disable(self, device: str, primary: bool):
-        if disable_monitor(device, primary):
-            self.refresh()
+        ok, msg = disable_monitor(device, primary)
+        if ok:
+            self.refresh_monitors()
         else:
-            messagebox.showerror("Monitor Manager", f"Could not disable {device}.")
+            QMessageBox.warning(self, "Monitor Manager", msg or f"Could not disable {device}.")
 
     def _on_enable(self, device: str, active_monitors: list):
         if enable_monitor(device, active_monitors):
-            self.refresh()
+            self.refresh_monitors()
         else:
-            messagebox.showerror("Monitor Manager", f"Could not enable {device}.")
+            QMessageBox.critical(self, "Monitor Manager",
+                                 f"Could not enable {device}.")
 
     def _on_make_primary(self, device: str):
         monitors = get_active_monitors()
         if make_primary(device, monitors):
-            self.refresh()
+            self.refresh_monitors()
         else:
-            messagebox.showerror("Monitor Manager", f"Could not set {device} as primary.")
+            QMessageBox.critical(self, "Monitor Manager",
+                                 f"Could not set {device} as primary.")
+
+    def _apply_rate(self, device: str, hz: int):
+        if not set_refresh_rate(device, hz):
+            QMessageBox.critical(self, "Monitor Manager",
+                                 f"Could not set {hz} Hz on {device}.")
+
+    def _custom_rate(self, device: str):
+        hz, ok = QInputDialog.getInt(self, "Refresh Rate",
+                                      "Enter refresh rate (Hz):", 60, 1, 500)
+        if ok:
+            self._apply_rate(device, hz)
+
+    def _on_rtss_cap(self):
+        if not _find_rtss_path():
+            QMessageBox.critical(self, "Monitor Manager",
+                "RTSS not found.\nMake sure RivaTuner Statistics Server is installed.")
+            return
+        RTSSCapDialog(self).exec()
+
+    def _set_audio_output(self, device_id: str):
+        threading.Thread(target=self._do_set_audio,
+                         args=(device_id,), daemon=True).start()
+
+    def _do_set_audio(self, device_id: str):
+        ok, err = set_default_audio_output(device_id)
+        if not ok:
+            msg = f"Could not switch audio output.\n\n{err}" if err \
+                  else "Could not switch audio output."
+            QTimer.singleShot(0, lambda: QMessageBox.critical(
+                self, "Audio Switch Failed", msg
+            ))
+
+    def _on_toggle_autostart(self, checked: bool):
+        set_autostart(checked)
+
+    def _on_check_update(self):
+        self.setWindowTitle("Monitor Manager  —  Downloading update…")
+        threading.Thread(target=self._do_update, daemon=True).start()
+
+    def _do_update(self):
+        ok, result = download_update()
+        if ok:
+            QTimer.singleShot(0, lambda: self._finish_update(result))
+        else:
+            QTimer.singleShot(0, lambda: (
+                self.setWindowTitle("Monitor Manager"),
+                QMessageBox.critical(self, "Update Failed",
+                                     result or "Could not download update."),
+            ))
+
+    def _finish_update(self, tmp_exe: str):
+        self.setWindowTitle("Monitor Manager")
+        QMessageBox.information(self, "Update",
+                                "Update downloaded!\nThe app will now restart.")
+        apply_update(tmp_exe)
+        self._quit()
 
 
+# ── Entry point ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyleSheet(APP_QSS)
+    app.setQuitOnLastWindowClosed(False)
+
+    win = MainWindow()
+    if "--minimized" not in sys.argv:
+        win.show()
+
+    sys.exit(app.exec())
