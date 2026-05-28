@@ -1052,59 +1052,53 @@ class App(tk.Tk):
             self.after(150, self.withdraw)
 
     def _build_ui(self):
-        # Header
-        hdr = tk.Frame(self, bg=BG, padx=16, pady=14)
+        # ── Header ───────────────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=BG, padx=20, pady=14)
         hdr.pack(fill="x")
         tk.Label(hdr, text="Monitor Manager",
-                 font=("Segoe UI", 14, "bold"), bg=BG, fg=TEXT).pack(side="left")
+                 font=("Segoe UI", 15, "bold"), bg=BG, fg=TEXT).pack(side="left")
+        tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x")
 
-        # Temperature / usage bar
-        temp_bar = tk.Frame(self, bg=SURFACE, padx=16, pady=10)
-        temp_bar.pack(fill="x", padx=16)
+        # ── Stats chips ──────────────────────────────────────────────────────
+        stats_bar = tk.Frame(self, bg=BG, padx=16, pady=10)
+        stats_bar.pack(fill="x")
+        stats_bar.columnconfigure((0, 1, 2, 3), weight=1, uniform="chip")
 
-        tk.Label(temp_bar, text="CPU", font=("Segoe UI", 9, "bold"),
-                 bg=SURFACE, fg=SUBTEXT).pack(side="left")
-        self._cpu_lbl = tk.Label(temp_bar, text="—",
-                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=PEACH)
-        self._cpu_lbl.pack(side="left", padx=(6, 24))
+        def _chip(col, name, color):
+            f = tk.Frame(stats_bar, bg=SURFACE, padx=12, pady=8)
+            f.grid(row=0, column=col, sticky="ew",
+                   padx=(0, 8) if col < 3 else 0)
+            tk.Label(f, text=name, font=("Segoe UI", 8),
+                     bg=SURFACE, fg=SUBTEXT).pack(anchor="w")
+            lbl = tk.Label(f, text="—", font=("Segoe UI", 11, "bold"),
+                           bg=SURFACE, fg=color)
+            lbl.pack(anchor="w")
+            return lbl
 
-        tk.Label(temp_bar, text="GPU", font=("Segoe UI", 9, "bold"),
-                 bg=SURFACE, fg=SUBTEXT).pack(side="left")
-        self._gpu_lbl = tk.Label(temp_bar, text="—",
-                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=BLUE)
-        self._gpu_lbl.pack(side="left", padx=(6, 0))
+        self._cpu_lbl  = _chip(0, "CPU",        PEACH)
+        self._gpu_lbl  = _chip(1, "GPU",        BLUE)
+        self._pwr_lbl  = _chip(2, "System",     YELLOW)
+        self._ctrl_lbl = _chip(3, "Controller", TEXT)
 
-        tk.Label(temp_bar, text="System", font=("Segoe UI", 9, "bold"),
-                 bg=SURFACE, fg=SUBTEXT).pack(side="left", padx=(24, 0))
-        self._pwr_lbl = tk.Label(temp_bar, text="—",
-                                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=YELLOW)
-        self._pwr_lbl.pack(side="left", padx=(6, 0))
-
-        tk.Label(temp_bar, text="CTRL", font=("Segoe UI", 9, "bold"),
-                 bg=SURFACE, fg=SUBTEXT).pack(side="left", padx=(24, 0))
-        self._ctrl_lbl = tk.Label(temp_bar, text="—",
-                                   font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=SUBTEXT)
-        self._ctrl_lbl.pack(side="left", padx=(6, 0))
-
-        # Monitor list
+        # ── Monitor list ─────────────────────────────────────────────────────
         self.list_frame = tk.Frame(self, bg=BG, padx=16)
         self.list_frame.pack(fill="both", expand=True, pady=(12, 0))
 
-        # Divider
-        tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x", padx=16, pady=(8, 0))
+        # ── Divider ──────────────────────────────────────────────────────────
+        tk.Frame(self, bg=OVERLAY, height=1).pack(fill="x", pady=(8, 0))
 
-        # Bottom bar
-        bar = tk.Frame(self, bg=BG, padx=16, pady=14)
+        # ── Bottom bar ───────────────────────────────────────────────────────
+        bar = tk.Frame(self, bg=BG, padx=16, pady=12)
         bar.pack(fill="x")
-        make_btn(bar, "Turn Off All", turn_off_all,      RED ).pack(side="left", padx=(0, 8))
-        make_btn(bar, "Screensaver",  start_screensaver, BLUE).pack(side="left", padx=(0, 8))
+        make_btn(bar, "Turn Off All", turn_off_all,      RED ).pack(side="left", padx=(0, 6))
+        make_btn(bar, "Screensaver",  start_screensaver, BLUE).pack(side="left", padx=(0, 6))
 
         self._hdr_btn = make_btn(bar, "HDR", self._on_toggle_hdr, RED)
-        self._hdr_btn.pack(side="left", padx=(0, 8))
+        self._hdr_btn.pack(side="left", padx=(0, 6))
 
         self._build_misc_menu(bar)
 
-        make_btn(bar, "↻  Refresh", self.refresh, GREEN).pack(side="left", padx=(8, 0))
+        make_btn(bar, "↻ Refresh", self.refresh, GREEN).pack(side="right")
         self._refresh_hdr_btn()
 
     def _build_misc_menu(self, bar):
@@ -1376,52 +1370,61 @@ class App(tk.Tk):
             self._disabled_card(dev, active)
 
     def _active_card(self, mon: dict):
-        card = tk.Frame(self.list_frame, bg=SURFACE, padx=14, pady=10)
-        card.pack(fill="x", pady=(0, 8))
+        outer = tk.Frame(self.list_frame, bg=SURFACE)
+        outer.pack(fill="x", pady=(0, 8))
+
+        # Colored left accent strip
+        tk.Frame(outer, bg=BLUE if mon["primary"] else OVERLAY,
+                 width=3).pack(side="left", fill="y")
+
+        card = tk.Frame(outer, bg=SURFACE, padx=14, pady=10)
+        card.pack(side="left", fill="both", expand=True)
 
         top = tk.Frame(card, bg=SURFACE)
         top.pack(fill="x")
 
         tk.Label(top, text=f"Monitor {mon['index']}",
                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-
-        badge_text  = "  ● Primary"   if mon["primary"] else "  ○ Secondary"
-        badge_color = BLUE            if mon["primary"] else SUBTEXT
-        tk.Label(top, text=badge_text,
-                 font=("Segoe UI", 9), bg=SURFACE, fg=badge_color).pack(side="left")
+        tk.Label(top, text="  Primary" if mon["primary"] else "  Secondary",
+                 font=("Segoe UI", 9), bg=SURFACE,
+                 fg=BLUE if mon["primary"] else SUBTEXT).pack(side="left")
 
         make_btn(top, "Disable",
                  lambda d=mon["device"], p=mon["primary"]: self._on_disable(d, p),
                  YELLOW).pack(side="right", padx=(4, 0))
-
         if not mon["primary"]:
-            make_btn(top, "★ Make Primary",
+            make_btn(top, "Make Primary",
                      lambda d=mon["device"]: self._on_make_primary(d),
                      GREEN).pack(side="right")
 
-        info = (
-            f"{mon['width']} × {mon['height']}    "
-            f"Position  ({mon['left']}, {mon['top']})    "
-            f"Device  {mon['device']}"
-        )
-        tk.Label(card, text=info,
-                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(anchor="w", pady=(5, 0))
+        info_row = tk.Frame(card, bg=SURFACE)
+        info_row.pack(fill="x", pady=(6, 0))
+        tk.Label(info_row, text=f"{mon['width']} × {mon['height']}",
+                 font=("Segoe UI", 10, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
+        tk.Label(info_row,
+                 text=f"  ·  ({mon['left']}, {mon['top']})  ·  {mon['device']}",
+                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(side="left")
 
     def _disabled_card(self, dev: dict, active_monitors: list):
-        card = tk.Frame(self.list_frame, bg=SURFACE, padx=14, pady=10)
-        card.pack(fill="x", pady=(0, 8))
+        outer = tk.Frame(self.list_frame, bg=SURFACE)
+        outer.pack(fill="x", pady=(0, 8))
+
+        tk.Frame(outer, bg=OVERLAY, width=3).pack(side="left", fill="y")
+
+        card = tk.Frame(outer, bg=SURFACE, padx=14, pady=10)
+        card.pack(side="left", fill="both", expand=True)
 
         top = tk.Frame(card, bg=SURFACE)
         top.pack(fill="x")
 
         tk.Label(top, text=dev["device"],
                  font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT).pack(side="left")
-        tk.Label(top, text="  ✕ Disabled",
-                 font=("Segoe UI", 9), bg=SURFACE, fg=RED).pack(side="left")
+        tk.Label(top, text="  Disabled",
+                 font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(side="left")
 
         make_btn(top, "Enable",
                  lambda d=dev["device"], a=active_monitors: self._on_enable(d, a),
-                 PURPLE).pack(side="right")
+                 GREEN).pack(side="right")
 
         tk.Label(card, text=dev["description"],
                  font=("Segoe UI", 9), bg=SURFACE, fg=SUBTEXT).pack(anchor="w", pady=(5, 0))
