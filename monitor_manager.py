@@ -513,9 +513,10 @@ def get_autostart() -> bool:
     return result.returncode == 0
 
 
-def set_autostart(enable: bool):
+def set_autostart(enable: bool) -> tuple:
+    """Returns (success, error_message)."""
     if enable:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "schtasks", "/create",
                 "/tn", _TASK_NAME,
@@ -524,13 +525,16 @@ def set_autostart(enable: bool):
                 "/rl", "highest",
                 "/f",
             ],
-            capture_output=True, creationflags=CREATE_NO_WINDOW,
+            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
         )
     else:
-        subprocess.run(
+        result = subprocess.run(
             ["schtasks", "/delete", "/tn", _TASK_NAME, "/f"],
-            capture_output=True, creationflags=CREATE_NO_WINDOW,
+            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
         )
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout).strip()
+    return True, ""
 
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
 def _find_rtss_path() -> str:
@@ -1666,7 +1670,11 @@ class MainWindow(QMainWindow):
             ))
 
     def _on_toggle_autostart(self, checked: bool):
-        set_autostart(checked)
+        ok, err = set_autostart(checked)
+        if not ok:
+            self._autostart_action.setChecked(not checked)
+            QMessageBox.warning(self, "Start with Windows",
+                err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
         self.setWindowTitle("Monitor Manager  —  Downloading update…")
