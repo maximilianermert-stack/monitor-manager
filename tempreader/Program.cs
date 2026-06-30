@@ -59,8 +59,16 @@ foreach (var hw in computer.Hardware)
             else if (sensor.SensorType == SensorType.Load && gpuLoad == null
                      && sensor.Name.Contains("Core"))
                 gpuLoad = sensor.Value;
-            else if (sensor.SensorType == SensorType.Power && gpuPower == null)
-                gpuPower = sensor.Value;
+            else if (sensor.SensorType == SensorType.Power)
+            {
+                // Prefer Package/Board/total "GPU Power"; skip memory-only sub-sensors.
+                bool isMem   = sensor.Name.Contains("Memory");
+                bool isTotal = sensor.Name.Contains("Package")
+                            || sensor.Name == "GPU Power"
+                            || sensor.Name.Contains("Board");
+                if (!isMem && (gpuPower == null || isTotal))
+                    gpuPower = sensor.Value;
+            }
             else if (sensor.SensorType == SensorType.SmallData)
             {
                 if (gpuMemUsed  == null && sensor.Name.Contains("Memory Used"))
