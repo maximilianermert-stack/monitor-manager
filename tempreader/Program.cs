@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using LibreHardwareMonitor.Hardware;
 using Newtonsoft.Json;
 
@@ -82,6 +83,39 @@ foreach (var hw in computer.Hardware)
 }
 
 computer.Close();
+
+// nvidia-smi fallback for GPU load and VRAM (LHM 0.9.4 lacks Blackwell support)
+if (gpuLoad == null || gpuLoad == 0 || gpuMemTotal == null || gpuMemTotal == 0)
+{
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName               = "nvidia-smi",
+            Arguments              = "--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
+            RedirectStandardOutput = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+        };
+        using var proc = Process.Start(psi)!;
+        var line = proc.StandardOutput.ReadLine();
+        proc.WaitForExit(3000);
+        if (line != null)
+        {
+            var parts = line.Split(',');
+            if (parts.Length >= 3
+                && float.TryParse(parts[0].Trim(), out float smiLoad)
+                && float.TryParse(parts[1].Trim(), out float smiMemUsed)
+                && float.TryParse(parts[2].Trim(), out float smiMemTotal))
+            {
+                gpuLoad     = smiLoad;
+                gpuMemUsed  = smiMemUsed;
+                gpuMemTotal = smiMemTotal;
+            }
+        }
+    }
+    catch { }
+}
 
 Console.WriteLine(JsonConvert.SerializeObject(new
 {
