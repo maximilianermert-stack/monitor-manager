@@ -878,7 +878,9 @@ def download_update() -> tuple:
             return False, "No .exe found in latest release."
         download_url = assets[0]["browser_download_url"]
         tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
-        urllib.request.urlretrieve(download_url, tmp_exe)
+        with urllib.request.urlopen(download_url, timeout=120) as dl:
+            with open(tmp_exe, "wb") as f:
+                shutil.copyfileobj(dl, f)
         return True, tmp_exe
     except Exception as e:
         return False, str(e)
