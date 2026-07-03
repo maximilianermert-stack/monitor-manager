@@ -61,12 +61,13 @@ foreach (var hw in computer.Hardware)
                 gpuLoad = sensor.Value;
             else if (sensor.SensorType == SensorType.Power)
             {
-                // Prefer Package/Board/total "GPU Power"; skip memory-only sub-sensors.
-                bool isMem   = sensor.Name.Contains("Memory");
+                // Always upgrade to a Package/Board/total sensor if found.
+                // Fall back to whatever comes first (including memory sub-sensors)
+                // so we never return null when any power reading exists.
                 bool isTotal = sensor.Name.Contains("Package")
                             || sensor.Name == "GPU Power"
                             || sensor.Name.Contains("Board");
-                if (!isMem && (gpuPower == null || isTotal))
+                if (isTotal || gpuPower == null)
                     gpuPower = sensor.Value;
             }
             else if (sensor.SensorType == SensorType.SmallData)
