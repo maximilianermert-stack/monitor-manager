@@ -863,8 +863,10 @@ _GITHUB_RELEASE_URL = (
 _DETACHED_PROCESS = 0x00000008
 
 
-def download_update() -> tuple:
-    """Download latest exe from GitHub. Returns (ok, tmp_exe_path_or_error)."""
+def download_update(progress_cb=None) -> tuple:
+    """Download latest exe from GitHub. Returns (ok, tmp_exe_path_or_error).
+    progress_cb(pct: int) is called periodically with 0-100 during download.
+    """
     if not getattr(sys, "frozen", False):
         return False, "Auto-update only works when running as .exe"
     try:
@@ -879,8 +881,17 @@ def download_update() -> tuple:
         download_url = assets[0]["browser_download_url"]
         tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
         with urllib.request.urlopen(download_url, timeout=120) as dl:
+            total = int(dl.headers.get("Content-Length") or 0)
+            downloaded = 0
             with open(tmp_exe, "wb") as f:
-                shutil.copyfileobj(dl, f)
+                while True:
+                    chunk = dl.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_cb and total:
+                        progress_cb(min(99, downloaded * 100 // total))
         return True, tmp_exe
     except Exception as e:
         return False, str(e)
@@ -1303,6 +1314,15 @@ class MainWindow(QMainWindow):
         self.refresh_monitors()
         self._worker.start()
 
+        # Clean up leftover .old exe from a previous update
+        if getattr(sys, "frozen", False):
+            old_exe = sys.executable + ".old"
+            if os.path.exists(old_exe):
+                try:
+                    os.unlink(old_exe)
+                except Exception:
+                    pass
+
         self._temp_timer = QTimer(self)
         self._temp_timer.timeout.connect(self._kick_worker)
         self._temp_timer.start(3000)
@@ -1679,11 +1699,15 @@ class MainWindow(QMainWindow):
                 err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
-        self.setWindowTitle("Monitor Manager  —  Downloading update…")
+        self.setWindowTitle("Monitor Manager  —  Downloading update… 0%")
         threading.Thread(target=self._do_update, daemon=True).start()
 
     def _do_update(self):
-        ok, result = download_update()
+        def on_progress(pct):
+            QTimer.singleShot(0, lambda: self.setWindowTitle(
+                f"Monitor Manager  —  Downloading update… {pct}%"
+            ))
+        ok, result = download_update(progress_cb=on_progress)
         if ok:
             QTimer.singleShot(0, lambda: self._finish_update(result))
         else:
