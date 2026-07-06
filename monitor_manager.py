@@ -911,8 +911,11 @@ def download_update(progress_cb=None) -> tuple:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if progress_cb and total:
-                        progress_cb(min(99, downloaded * 100 // total))
+                    if progress_cb:
+                        if total:
+                            progress_cb(f"{min(99, downloaded * 100 // total)}%")
+                        else:
+                            progress_cb(f"{downloaded / (1024 * 1024):.1f} MB")
         return True, tmp_exe
     except Exception as e:
         return False, str(e)
@@ -1852,13 +1855,13 @@ class MainWindow(QMainWindow):
                 err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
-        self.setWindowTitle("Monitor Manager  —  Downloading update… 0%")
+        self.setWindowTitle("Monitor Manager  —  Downloading update…")
         threading.Thread(target=self._do_update, daemon=True).start()
 
     def _do_update(self):
-        def on_progress(pct):
+        def on_progress(text):
             QTimer.singleShot(0, lambda: self.setWindowTitle(
-                f"Monitor Manager  —  Downloading update… {pct}%"
+                f"Monitor Manager  —  Downloading update… {text}"
             ))
         ok, result = download_update(progress_cb=on_progress)
         if ok:
