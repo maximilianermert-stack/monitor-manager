@@ -170,8 +170,9 @@ def _tempreader_path():
 
 def get_temperatures():
     """
-    Returns (cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power, gpu_mem_used_mb, gpu_mem_total_mb).
-    Values are float or None. Calls the bundled TempReader.exe (LibreHardwareMonitor).
+    Returns ((cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power,
+              gpu_mem_used_mb, gpu_mem_total_mb), fans_list).
+    fans_list: [{"name": str, "rpm": int}, ...]. Calls bundled TempReader.exe.
     """
     try:
         exe = _tempreader_path()
@@ -179,8 +180,8 @@ def get_temperatures():
             [exe], capture_output=True, text=True,
             timeout=10, creationflags=CREATE_NO_WINDOW
         )
-        data      = json.loads(result.stdout.strip())
-        cpu       = data.get("cpu")
+        data          = json.loads(result.stdout.strip())
+        cpu           = data.get("cpu")
         cpu_load      = data.get("cpu_load")
         cpu_power     = data.get("cpu_power")
         gpu           = data.get("gpu")
@@ -188,7 +189,9 @@ def get_temperatures():
         gpu_power     = data.get("gpu_power")
         gpu_mem_used  = data.get("gpu_mem_used")
         gpu_mem_total = data.get("gpu_mem_total")
-        return (
+        fans          = [{"name": f["name"], "rpm": int(f["rpm"])}
+                         for f in data.get("fans", []) if f.get("rpm", 0) > 0]
+        temps = (
             round(float(cpu),           1) if cpu           is not None else None,
             round(float(cpu_load),      1) if cpu_load      is not None else None,
             round(float(cpu_power),     1) if cpu_power     is not None else None,
@@ -198,8 +201,9 @@ def get_temperatures():
             round(float(gpu_mem_used),  0) if gpu_mem_used  is not None else None,
             round(float(gpu_mem_total), 0) if gpu_mem_total is not None else None,
         )
+        return temps, fans
     except Exception:
-        return None, None, None, None, None, None, None, None
+        return (None, None, None, None, None, None, None, None), []
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -535,6 +539,23 @@ def set_autostart(enable: bool) -> tuple:
     if result.returncode != 0:
         return False, (result.stderr or result.stdout).strip()
     return True, ""
+
+# ── Fan naming persistence ────────────────────────────────────────────────────
+_FAN_NAMES_DIR  = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                               "MonitorManager")
+_FAN_NAMES_FILE = os.path.join(_FAN_NAMES_DIR, "fan_names.json")
+
+def load_fan_names() -> dict:
+    try:
+        with open(_FAN_NAMES_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_fan_names(names: dict):
+    os.makedirs(_FAN_NAMES_DIR, exist_ok=True)
+    with open(_FAN_NAMES_FILE, "w", encoding="utf-8") as f:
+        json.dump(names, f, indent=2)
 
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
 def _find_rtss_path() -> str:
@@ -1031,6 +1052,31 @@ QLineEdit:focus {{ border-color: {ACCENT}; }}
 QMessageBox {{ background: {BG}; }}
 QMessageBox QLabel {{ color: {TEXT}; }}
 QInputDialog {{ background: {BG}; }}
+
+QTabWidget::pane {{
+    border: none;
+    background: transparent;
+}}
+QTabWidget {{ background: transparent; }}
+QTabBar {{
+    background: {BG};
+}}
+QTabBar::tab {{
+    background: {BG};
+    color: {SUBTEXT};
+    padding: 8px 22px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 10pt;
+}}
+QTabBar::tab:selected {{
+    color: {TEXT};
+    border-bottom: 2px solid {ACCENT};
+}}
+QTabBar::tab:hover:!selected {{
+    color: {TEXT};
+    background: {SURFACE};
+}}
 """
 
 
@@ -1205,16 +1251,76 @@ class DisabledCard(QFrame):
         row.addWidget(body)
 
 
+# ── Fan row widget ──────────────────────────────────────────────────────────────
+class FanRow(QFrame):
+    renamed = pyqtSignal(str, str)   # sensor_name, new_display_name
+
+    def __init__(self, sensor_name: str, rpm: int, display_name: str, parent=None):
+        super().__init__(parent)
+        self._sensor_name = sensor_name
+        self.setObjectName("monitorCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Double-click to rename")
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        self.setGraphicsEffect(shadow)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        accent = QFrame()
+        accent.setFixedWidth(3)
+        accent.setStyleSheet(f"background:{SUBTEXT}; border-radius:0;")
+        row.addWidget(accent)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(16, 12, 16, 12)
+
+        icon = QLabel("⚙")
+        icon.setStyleSheet(f"color:{SUBTEXT}; font-size:12pt;")
+        body.addWidget(icon)
+        body.addSpacing(10)
+
+        self._name_lbl = QLabel(display_name)
+        self._name_lbl.setStyleSheet("font-weight:600;")
+        body.addWidget(self._name_lbl)
+        body.addStretch()
+
+        self._rpm_lbl = QLabel(f"{rpm:,} RPM" if rpm else "— RPM")
+        self._rpm_lbl.setStyleSheet(f"color:{ACCENT}; font-weight:600;")
+        body.addWidget(self._rpm_lbl)
+
+        wrap = QWidget()
+        wrap.setLayout(body)
+        row.addWidget(wrap, 1)
+
+    def update_rpm(self, rpm: int):
+        self._rpm_lbl.setText(f"{rpm:,} RPM" if rpm else "— RPM")
+
+    def mouseDoubleClickEvent(self, event):
+        name, ok = QInputDialog.getText(
+            self, "Rename Fan", "Fan name:",
+            text=self._name_lbl.text()
+        )
+        if ok and name.strip():
+            self._name_lbl.setText(name.strip())
+            self.renamed.emit(self._sensor_name, name.strip())
+
+
 # ── Background worker ───────────────────────────────────────────────────────────
 class TempWorker(QThread):
-    ready = pyqtSignal(tuple, tuple, object, bool)
+    ready = pyqtSignal(tuple, tuple, object, bool, list)
 
     def run(self):
-        temps   = get_temperatures()
-        ram     = get_ram_usage()
-        battery = get_xbox_battery()
-        hdr     = get_hdr_state()
-        self.ready.emit(temps, ram, battery, hdr)
+        temps, fans = get_temperatures()
+        ram         = get_ram_usage()
+        battery     = get_xbox_battery()
+        hdr         = get_hdr_state()
+        self.ready.emit(temps, ram, battery, hdr, fans)
 
 
 # ── RTSS FPS cap dialog ─────────────────────────────────────────────────────────
@@ -1304,6 +1410,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(620, 320)
         self.resize(760, 520)
 
+        self._fan_names = load_fan_names()
+        self._fan_rows: dict  = {}
+
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
 
@@ -1385,23 +1494,39 @@ class MainWindow(QMainWindow):
 
         root.addWidget(stats_w)
 
-        # ── Monitor list (scrollable) ─────────────────────────────────────
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # ── Tabs (Monitors / Fans) ────────────────────────────────────────
+        self._tabs = QTabWidget()
+        self._tabs.setDocumentMode(True)
 
+        # Monitors tab
+        mon_scroll = QScrollArea()
+        mon_scroll.setWidgetResizable(True)
+        mon_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mon_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_content = QWidget()
         self._scroll_content.setObjectName("scrollContent")
         self._monitor_layout = QVBoxLayout(self._scroll_content)
         self._monitor_layout.setContentsMargins(16, 12, 16, 12)
         self._monitor_layout.setSpacing(10)
         self._monitor_layout.addStretch()
+        mon_scroll.setWidget(self._scroll_content)
+        self._tabs.addTab(mon_scroll, "Monitors")
 
-        self._scroll.setWidget(self._scroll_content)
-        root.addWidget(self._scroll, 1)
+        # Fans tab
+        fan_scroll = QScrollArea()
+        fan_scroll.setWidgetResizable(True)
+        fan_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        fan_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._fans_content = QWidget()
+        self._fans_content.setObjectName("scrollContent")
+        self._fans_layout = QVBoxLayout(self._fans_content)
+        self._fans_layout.setContentsMargins(16, 12, 16, 12)
+        self._fans_layout.setSpacing(10)
+        self._fans_layout.addStretch()
+        fan_scroll.setWidget(self._fans_content)
+        self._tabs.addTab(fan_scroll, "Fans")
+
+        root.addWidget(self._tabs, 1)
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
@@ -1556,7 +1681,7 @@ class MainWindow(QMainWindow):
             self._worker.ready.connect(self._apply_temps)
             self._worker.start()
 
-    def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool):
+    def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool, fans: list):
         (cpu_temp, cpu_load, cpu_power,
          gpu_temp, gpu_load, gpu_power,
          gpu_mem_used, gpu_mem_total) = temps
@@ -1581,6 +1706,34 @@ class MainWindow(QMainWindow):
 
         self._chip_ctrl.set_value(battery if battery else "—")
         self._apply_hdr_color(hdr)
+        self._update_fans(fans)
+
+    def _update_fans(self, fans: list):
+        current = set(self._fan_rows.keys())
+        incoming = {f["name"] for f in fans}
+        if current != incoming:
+            # Rebuild fan list
+            while self._fans_layout.count() > 1:
+                item = self._fans_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._fan_rows.clear()
+            for f in fans:
+                sname = f["name"]
+                display = self._fan_names.get(sname, sname)
+                row = FanRow(sname, f["rpm"], display, self._fans_content)
+                row.renamed.connect(self._on_fan_renamed)
+                self._fans_layout.insertWidget(
+                    self._fans_layout.count() - 1, row
+                )
+                self._fan_rows[sname] = row
+        else:
+            for f in fans:
+                self._fan_rows[f["name"]].update_rpm(f["rpm"])
+
+    def _on_fan_renamed(self, sensor_name: str, new_name: str):
+        self._fan_names[sensor_name] = new_name
+        save_fan_names(self._fan_names)
 
     def _refresh_hdr_btn(self):
         hdr = get_hdr_state()

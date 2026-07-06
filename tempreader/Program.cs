@@ -5,8 +5,9 @@ using Newtonsoft.Json;
 
 var computer = new Computer
 {
-    IsCpuEnabled = true,
-    IsGpuEnabled = true,
+    IsCpuEnabled         = true,
+    IsGpuEnabled         = true,
+    IsMotherboardEnabled = true,
 };
 computer.Open();
 
@@ -20,6 +21,8 @@ float? gpuMemUsed  = null;  // MB
 float? gpuMemTotal = null;  // MB
 string gpuName     = "";
 
+var fans = new System.Collections.Generic.List<object>();
+
 foreach (var hw in computer.Hardware)
 {
     hw.Update();
@@ -28,8 +31,9 @@ foreach (var hw in computer.Hardware)
     bool isGpu = hw.HardwareType is HardwareType.GpuNvidia
                                  or HardwareType.GpuAmd
                                  or HardwareType.GpuIntel;
+    bool isMb  = hw.HardwareType == HardwareType.Motherboard;
 
-    if (!isCpu && !isGpu) continue;
+    if (!isCpu && !isGpu && !isMb) continue;
 
     foreach (var sensor in hw.Sensors)
     {
@@ -78,6 +82,11 @@ foreach (var hw in computer.Hardware)
                 else if (gpuMemTotal == null && sensor.Name.Contains("Memory Total"))
                     gpuMemTotal = sensor.Value;
             }
+        }
+        else if (isMb)
+        {
+            if (sensor.SensorType == SensorType.Fan && sensor.Value > 0)
+                fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
         }
     }
 }
@@ -128,4 +137,5 @@ Console.WriteLine(JsonConvert.SerializeObject(new
     gpu_mem_used  = gpuMemUsed,
     gpu_mem_total = gpuMemTotal,
     gpu_name      = gpuName,
+    fans          = fans,
 }));
