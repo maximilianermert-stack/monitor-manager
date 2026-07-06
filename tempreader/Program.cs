@@ -83,7 +83,6 @@ foreach (var hw in computer.Hardware)
                     gpuMemTotal = sensor.Value;
             }
         }
-        }
     }
 
     // Motherboard fan sensors live on sub-hardware (SuperIO chip), not the MB itself
