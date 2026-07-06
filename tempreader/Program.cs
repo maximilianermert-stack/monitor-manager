@@ -83,10 +83,20 @@ foreach (var hw in computer.Hardware)
                     gpuMemTotal = sensor.Value;
             }
         }
-        else if (isMb)
+        }
+    }
+
+    // Motherboard fan sensors live on sub-hardware (SuperIO chip), not the MB itself
+    if (isMb)
+    {
+        foreach (var sub in hw.SubHardware)
         {
-            if (sensor.SensorType == SensorType.Fan && sensor.Value > 0)
-                fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
+            sub.Update();
+            foreach (var sensor in sub.Sensors)
+            {
+                if (sensor.SensorType == SensorType.Fan && sensor.Value > 0)
+                    fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
+            }
         }
     }
 }
