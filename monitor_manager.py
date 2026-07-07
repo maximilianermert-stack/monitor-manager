@@ -909,7 +909,10 @@ def download_update(progress_cb=None) -> tuple:
             return False, "No .exe found in latest release."
         download_url = assets[0]["browser_download_url"]
         tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
-        with urllib.request.urlopen(download_url, timeout=120) as dl:
+        dl_req = urllib.request.Request(
+            download_url, headers={"User-Agent": "MonitorManager-Updater/1.0"}
+        )
+        with urllib.request.urlopen(dl_req, timeout=120) as dl:
             total = int(dl.headers.get("Content-Length") or 0)
             downloaded = 0
             with open(tmp_exe, "wb") as f:
