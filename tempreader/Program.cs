@@ -21,7 +21,8 @@ float? gpuMemUsed  = null;  // MB
 float? gpuMemTotal = null;  // MB
 string gpuName     = "";
 
-var fans = new System.Collections.Generic.List<object>();
+var fans    = new System.Collections.Generic.List<object>();
+var debugHw = new System.Collections.Generic.List<string>();
 
 foreach (var hw in computer.Hardware)
 {
@@ -32,6 +33,10 @@ foreach (var hw in computer.Hardware)
                                  or HardwareType.GpuAmd
                                  or HardwareType.GpuIntel;
     bool isMb  = hw.HardwareType == HardwareType.Motherboard;
+
+    debugHw.Add($"{hw.HardwareType}:{hw.Name}");
+    foreach (var sub in hw.SubHardware)
+        debugHw.Add($"  sub:{sub.HardwareType}:{sub.Name}:{string.Join(",", System.Linq.Enumerable.Select(sub.Sensors, s => $"{s.SensorType}/{s.Name}={s.Value}"))}");
 
     if (!isCpu && !isGpu && !isMb) continue;
 
@@ -147,4 +152,5 @@ Console.WriteLine(JsonConvert.SerializeObject(new
     gpu_mem_total = gpuMemTotal,
     gpu_name      = gpuName,
     fans          = fans,
+    debug_hw      = debugHw,
 }));

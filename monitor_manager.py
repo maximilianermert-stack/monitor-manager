@@ -191,6 +191,14 @@ def get_temperatures():
         gpu_mem_total = data.get("gpu_mem_total")
         fans          = [{"name": f["name"], "rpm": int(f["rpm"])}
                          for f in data.get("fans", []) if f.get("rpm", 0) > 0]
+        # DEBUG: write hardware list to temp file for diagnosis
+        try:
+            import tempfile, pathlib
+            pathlib.Path(tempfile.gettempdir(), "mm_debug_hw.txt").write_text(
+                "\n".join(data.get("debug_hw", [])), encoding="utf-8"
+            )
+        except Exception:
+            pass
         temps = (
             round(float(cpu),           1) if cpu           is not None else None,
             round(float(cpu_load),      1) if cpu_load      is not None else None,
