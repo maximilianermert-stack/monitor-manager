@@ -51,20 +51,20 @@ jobs:
           pyinstaller
           --onefile
           --windowed
-          --name "MonitorManager"
+          --name "SystemManager"
           --uac-admin
           --icon icon.ico
           --collect-all PyQt6
           --add-data "tempreader_out;tempreader"
           --add-data "audioswitch_out;audioswitch"
-          monitor_manager.py
+          system_manager.py
 
       - name: Upload artifact (auto build)
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
-          name: MonitorManager-${{ github.sha }}
-          path: dist/MonitorManager.exe
+          name: SystemManager-${{ github.sha }}
+          path: dist/SystemManager.exe
           retention-days: 30
 
       - name: Update latest release (auto build)
@@ -78,7 +78,7 @@ jobs:
             --title "Latest Build" `
             --notes "Auto-updated on every push to main. Commit: ${{ github.sha }}" `
             --prerelease `
-            dist/MonitorManager.exe#MonitorManager.exe
+            dist/SystemManager.exe#SystemManager.exe
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch'
@@ -86,6 +86,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v${{ inputs.version }}" `
-            --title "Monitor Manager v${{ inputs.version }}" `
+            --title "System Manager v${{ inputs.version }}" `
             --notes "${{ inputs.description }}" `
-            dist/MonitorManager.exe#MonitorManager-v${{ inputs.version }}.exe
+            dist/SystemManager.exe#SystemManager-v${{ inputs.version }}.exe

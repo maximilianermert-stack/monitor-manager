@@ -1,5 +1,5 @@
 """
-Monitor Manager
+System Manager
 Requires administrator privileges for full hardware access.
 """
 
@@ -508,7 +508,7 @@ def start_screensaver() -> str:
 # ── Autostart (Start with Windows) ────────────────────────────────────────────
 # Uses Task Scheduler with "run with highest privileges" so the app
 # starts elevated at login — the HKCU\Run key doesn't support elevation.
-_TASK_NAME = "MonitorManager"
+_TASK_NAME = "SystemManager"
 
 
 def _app_launch_cmd() -> str:
@@ -550,7 +550,7 @@ def set_autostart(enable: bool) -> tuple:
 
 # ── Fan naming persistence ────────────────────────────────────────────────────
 _FAN_NAMES_DIR  = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                               "MonitorManager")
+                               "SystemManager")
 _FAN_NAMES_FILE = os.path.join(_FAN_NAMES_DIR, "fan_names.json")
 
 def load_fan_names() -> dict:
@@ -886,7 +886,7 @@ def set_default_audio_output(device_id: str) -> tuple:
 
 # ── Auto-update ────────────────────────────────────────────────────────────────
 _GITHUB_RELEASE_URL = (
-    "https://api.github.com/repos/maximilianermert-stack/monitor-manager"
+    "https://api.github.com/repos/maximilianermert-stack/system-manager"
     "/releases/tags/latest"
 )
 _DETACHED_PROCESS = 0x00000008
@@ -900,7 +900,7 @@ def download_update(progress_cb=None) -> tuple:
         return False, "Auto-update only works when running as .exe"
     try:
         req = urllib.request.Request(
-            _GITHUB_RELEASE_URL, headers={"User-Agent": "MonitorManager"}
+            _GITHUB_RELEASE_URL, headers={"User-Agent": "SystemManager"}
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
@@ -908,9 +908,9 @@ def download_update(progress_cb=None) -> tuple:
         if not assets:
             return False, "No .exe found in latest release."
         download_url = assets[0]["browser_download_url"]
-        tmp_exe = os.path.join(tempfile.gettempdir(), "MonitorManager_new.exe")
+        tmp_exe = os.path.join(tempfile.gettempdir(), "SystemManager_new.exe")
         dl_req = urllib.request.Request(
-            download_url, headers={"User-Agent": "MonitorManager-Updater/1.0"}
+            download_url, headers={"User-Agent": "SystemManager-Updater/1.0"}
         )
         with urllib.request.urlopen(dl_req, timeout=120) as dl:
             total = int(dl.headers.get("Content-Length") or 0)
@@ -1400,7 +1400,7 @@ class RTSSCapDialog(QDialog):
         if set_rtss_fps_limit(fps):
             self.accept()
         else:
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                                  "Could not write RTSS profile.")
 
     def _apply_custom(self):
@@ -1410,7 +1410,7 @@ class RTSSCapDialog(QDialog):
                 raise ValueError
             self._apply(fps)
         except ValueError:
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                                  "Enter a valid number (0 = unlimited).")
 
 
@@ -1420,7 +1420,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Monitor Manager")
+        self.setWindowTitle("System Manager")
         self.setMinimumSize(620, 320)
         self.resize(760, 520)
 
@@ -1479,7 +1479,7 @@ class MainWindow(QMainWindow):
         hdr.setStyleSheet(f"background:{BG};")
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(20, 14, 20, 14)
-        title = QLabel("Monitor Manager")
+        title = QLabel("System Manager")
         title.setStyleSheet("font-size:15pt; font-weight:700;")
         hl.addWidget(title)
         hl.addStretch()
@@ -1659,10 +1659,10 @@ class MainWindow(QMainWindow):
     def _setup_tray(self):
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(_make_tray_icon())
-        self._tray.setToolTip("Monitor Manager")
+        self._tray.setToolTip("System Manager")
 
         tray_menu = QMenu()
-        tray_menu.addAction("Show Monitor Manager", self._show_window)
+        tray_menu.addAction("Show System Manager", self._show_window)
         tray_menu.addSeparator()
         tray_menu.addAction("Exit", self._quit)
 
@@ -1799,7 +1799,7 @@ class MainWindow(QMainWindow):
     def _on_screensaver(self):
         err = start_screensaver()
         if err:
-            QMessageBox.information(self, "Monitor Manager", err)
+            QMessageBox.information(self, "System Manager", err)
 
     def _on_toggle_hdr(self):
         toggle_hdr()
@@ -1810,13 +1810,13 @@ class MainWindow(QMainWindow):
         if ok:
             self.refresh_monitors()
         else:
-            QMessageBox.warning(self, "Monitor Manager", msg or f"Could not disable {device}.")
+            QMessageBox.warning(self, "System Manager", msg or f"Could not disable {device}.")
 
     def _on_enable(self, device: str, active_monitors: list):
         if enable_monitor(device, active_monitors):
             self.refresh_monitors()
         else:
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                                  f"Could not enable {device}.")
 
     def _on_make_primary(self, device: str):
@@ -1824,12 +1824,12 @@ class MainWindow(QMainWindow):
         if make_primary(device, monitors):
             self.refresh_monitors()
         else:
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                                  f"Could not set {device} as primary.")
 
     def _apply_rate(self, device: str, hz: int):
         if not set_refresh_rate(device, hz):
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                                  f"Could not set {hz} Hz on {device}.")
 
     def _custom_rate(self, device: str):
@@ -1840,7 +1840,7 @@ class MainWindow(QMainWindow):
 
     def _on_rtss_cap(self):
         if not _find_rtss_path():
-            QMessageBox.critical(self, "Monitor Manager",
+            QMessageBox.critical(self, "System Manager",
                 "RTSS not found.\nMake sure RivaTuner Statistics Server is installed.")
             return
         RTSSCapDialog(self).exec()
@@ -1866,26 +1866,26 @@ class MainWindow(QMainWindow):
                 err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
-        self.setWindowTitle("Monitor Manager  —  Downloading update…")
+        self.setWindowTitle("System Manager  —  Downloading update…")
         threading.Thread(target=self._do_update, daemon=True).start()
 
     def _do_update(self):
         def on_progress(text):
             QTimer.singleShot(0, lambda: self.setWindowTitle(
-                f"Monitor Manager  —  Downloading update… {text}"
+                f"System Manager  —  Downloading update… {text}"
             ))
         ok, result = download_update(progress_cb=on_progress)
         if ok:
             QTimer.singleShot(0, lambda: self._finish_update(result))
         else:
             QTimer.singleShot(0, lambda: (
-                self.setWindowTitle("Monitor Manager"),
+                self.setWindowTitle("System Manager"),
                 QMessageBox.critical(self, "Update Failed",
                                      result or "Could not download update."),
             ))
 
     def _finish_update(self, tmp_exe: str):
-        self.setWindowTitle("Monitor Manager")
+        self.setWindowTitle("System Manager")
         QMessageBox.information(self, "Update",
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(tmp_exe)
