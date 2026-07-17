@@ -17,13 +17,13 @@ import shutil
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-    QScrollArea, QVBoxLayout, QHBoxLayout, QSizePolicy,
+    QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
     QGraphicsDropShadowEffect, QTabWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect
 from PyQt6.QtGui import (
-    QIcon, QColor, QPixmap, QPainter, QBrush, QFont,
+    QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen,
 )
 
 # ── Windows API constants ──────────────────────────────────────────────────────
@@ -168,11 +168,18 @@ def _tempreader_path():
     return os.path.join(base, "tempreader", "TempReader.exe")
 
 
+def _round(v, digits=1):
+    return round(float(v), digits) if v is not None else None
+
+
 def get_temperatures():
     """
     Returns ((cpu_temp, cpu_load, cpu_power, gpu_temp, gpu_load, gpu_power,
-              gpu_mem_used_mb, gpu_mem_total_mb), fans_list).
-    fans_list: [{"name": str, "rpm": int}, ...]. Calls bundled TempReader.exe.
+              gpu_mem_used_mb, gpu_mem_total_mb), fans_list, sensors).
+    fans_list: [{"name": str, "rpm": int}, ...].
+    sensors: granular per-component readouts for the Sensors tab. Any field
+    can be None/missing if that sensor isn't exposed on this board/GPU.
+    Calls bundled TempReader.exe.
     """
     try:
         exe = _tempreader_path()
@@ -209,9 +216,31 @@ def get_temperatures():
             round(float(gpu_mem_used),  0) if gpu_mem_used  is not None else None,
             round(float(gpu_mem_total), 0) if gpu_mem_total is not None else None,
         )
-        return temps, fans
+        sensors = {
+            "cpu_voltage": _round(data.get("cpu_voltage"), 3),
+            "cpu_cores": [
+                {
+                    "index": c.get("index"),
+                    "clock": _round(c.get("clock"), 0),
+                    "load":  _round(c.get("load"), 0),
+                }
+                for c in data.get("cpu_cores", [])
+            ],
+            "gpu_hotspot":      _round(data.get("gpu_hotspot")),
+            "gpu_mem_junction": _round(data.get("gpu_mem_junction")),
+            "gpu_core_clock":   _round(data.get("gpu_core_clock"), 0),
+            "gpu_mem_clock":    _round(data.get("gpu_mem_clock"), 0),
+            "gpu_fan_pct":      _round(data.get("gpu_fan_pct"), 0),
+            "gpu_pcie_load":    _round(data.get("gpu_pcie_load"), 0),
+            "mb_chipset_temp":  _round(data.get("mb_chipset_temp")),
+            "mb_vrm_temp":      _round(data.get("mb_vrm_temp")),
+            "mb_voltages": {
+                k: _round(v, 2) for k, v in data.get("mb_voltages", {}).items()
+            },
+        }
+        return temps, fans, sensors
     except Exception:
-        return (None, None, None, None, None, None, None, None), []
+        return (None, None, None, None, None, None, None, None), [], {}
 
 # ── Monitor helpers ─────────────────────────────────────────────────────────────
 _MonitorEnumProc = ctypes.WINFUNCTYPE(
@@ -977,6 +1006,7 @@ SURFACE = "#151820"
 CARD    = "#1c2030"
 BORDER  = "#252a3d"
 ACCENT  = "#7c8cf8"
+ACCENT_DIM = "#2a2a4a"
 TEXT    = "#e2e8f0"
 SUBTEXT = "#64748b"
 GREEN   = "#4ade80"
@@ -1004,6 +1034,24 @@ QFrame#monitorCard {{
     border-radius: 10px;
     border: 1px solid {BORDER};
 }}
+QFrame#fanTile {{
+    background: {CARD};
+    border-radius: 12px;
+    border: 1px solid {BORDER};
+}}
+QFrame#sensorCell {{
+    background: {SURFACE};
+    border-radius: 6px;
+    border: 1px solid {BORDER};
+}}
+QPushButton#sensorHead {{
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    text-align: left;
+}}
+QPushButton#sensorHead:hover {{ background: {SURFACE}; }}
 QWidget#scrollContent {{ background: transparent; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{
@@ -1265,14 +1313,75 @@ class DisabledCard(QFrame):
         row.addWidget(body)
 
 
-# ── Fan row widget ──────────────────────────────────────────────────────────────
-class FanRow(QFrame):
+# ── Fan RPM ring gauge ────────────────────────────────────────────────────────
+class RingGauge(QWidget):
+    """Circular fill gauge: arc length = rpm / ref_max, with the value drawn
+    in the center. Reference scale is decorative (LHM doesn't report a fan's
+    true max RPM), not a measured bound."""
+
+    def __init__(self, ref_max: int = 2000, parent=None):
+        super().__init__(parent)
+        self._rpm = 0
+        self._ref_max = ref_max
+        self.setFixedSize(74, 74)
+
+    def set_rpm(self, rpm: int):
+        self._rpm = rpm
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        pen_w = 6
+        rect = self.rect().adjusted(
+            pen_w // 2 + 1, pen_w // 2 + 1, -(pen_w // 2 + 1), -(pen_w // 2 + 1)
+        )
+        pct = max(0.0, min(100.0, self._rpm / self._ref_max * 100)) if self._ref_max else 0.0
+
+        pen = QPen(QColor(BORDER))
+        pen.setWidth(pen_w)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(rect, 90 * 16, -360 * 16)
+
+        pen.setColor(QColor(ACCENT))
+        p.setPen(pen)
+        span = int(360 * 16 * pct / 100)
+        p.drawArc(rect, 90 * 16, -span)
+
+        inner = rect.adjusted(pen_w, pen_w, -pen_w, -pen_w)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(QColor(CARD)))
+        p.drawEllipse(inner)
+
+        p.setPen(QColor(TEXT))
+        f = QFont()
+        f.setPointSize(10)
+        f.setBold(True)
+        p.setFont(f)
+        num_rect = QRect(inner.left(), inner.top() + 8, inner.width(), 18)
+        p.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, f"{self._rpm:,}" if self._rpm else "—")
+
+        p.setPen(QColor(SUBTEXT))
+        f2 = QFont()
+        f2.setPointSize(6)
+        p.setFont(f2)
+        unit_rect = QRect(inner.left(), inner.top() + 26, inner.width(), 12)
+        p.drawText(unit_rect, Qt.AlignmentFlag.AlignCenter, "RPM")
+
+        p.end()
+
+
+# ── Fan tile widget ──────────────────────────────────────────────────────────
+class FanTile(QFrame):
     renamed = pyqtSignal(str, str)   # sensor_name, new_display_name
 
     def __init__(self, sensor_name: str, rpm: int, display_name: str, parent=None):
         super().__init__(parent)
         self._sensor_name = sensor_name
-        self.setObjectName("monitorCard")
+        self.setObjectName("fanTile")
+        self.setFixedSize(150, 150)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Double-click to rename")
 
@@ -1282,38 +1391,22 @@ class FanRow(QFrame):
         shadow.setColor(QColor(0, 0, 0, 80))
         self.setGraphicsEffect(shadow)
 
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(0)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(10, 16, 10, 12)
+        col.setSpacing(8)
+        col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        accent = QFrame()
-        accent.setFixedWidth(3)
-        accent.setStyleSheet(f"background:{SUBTEXT}; border-radius:0;")
-        row.addWidget(accent)
-
-        body = QHBoxLayout()
-        body.setContentsMargins(16, 12, 16, 12)
-
-        icon = QLabel("⚙")
-        icon.setStyleSheet(f"color:{SUBTEXT}; font-size:12pt;")
-        body.addWidget(icon)
-        body.addSpacing(10)
+        self._ring = RingGauge(parent=self)
+        self._ring.set_rpm(rpm)
+        col.addWidget(self._ring, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self._name_lbl = QLabel(display_name)
-        self._name_lbl.setStyleSheet("font-weight:600;")
-        body.addWidget(self._name_lbl)
-        body.addStretch()
-
-        self._rpm_lbl = QLabel(f"{rpm:,} RPM" if rpm else "— RPM")
-        self._rpm_lbl.setStyleSheet(f"color:{ACCENT}; font-weight:600;")
-        body.addWidget(self._rpm_lbl)
-
-        wrap = QWidget()
-        wrap.setLayout(body)
-        row.addWidget(wrap, 1)
+        self._name_lbl.setStyleSheet("font-weight:600; font-size:9pt;")
+        self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(self._name_lbl)
 
     def update_rpm(self, rpm: int):
-        self._rpm_lbl.setText(f"{rpm:,} RPM" if rpm else "— RPM")
+        self._ring.set_rpm(rpm)
 
     def mouseDoubleClickEvent(self, event):
         name, ok = QInputDialog.getText(
@@ -1325,16 +1418,117 @@ class FanRow(QFrame):
             self.renamed.emit(self._sensor_name, name.strip())
 
 
+# ── Sensor cell + card widgets ──────────────────────────────────────────────────
+class SensorCell(QFrame):
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sensorCell")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(9, 7, 9, 7)
+        lay.setSpacing(2)
+
+        name_lbl = QLabel(label)
+        name_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:7pt;")
+        self._val = QLabel("—")
+        self._val.setStyleSheet(f"color:{TEXT}; font-size:9pt; font-weight:600;")
+        lay.addWidget(name_lbl)
+        lay.addWidget(self._val)
+
+    def set_value(self, text: str):
+        self._val.setText(text)
+
+
+class SensorCard(QFrame):
+    """Collapsible per-component card: header shows a mono badge, the
+    component name, and a headline summary; the body reveals a grid of
+    granular readouts on click. Cells not present at construction time
+    (e.g. CPU cores, whose count is unknown until the first data pull)
+    are created on demand via set_value()."""
+
+    _COLS = 4
+
+    def __init__(self, mono: str, name: str, static_labels=(), parent=None):
+        super().__init__(parent)
+        self.setObjectName("monitorCard")
+        self._cells: dict = {}
+        self._cell_count = 0
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._toggle = QPushButton()
+        self._toggle.setObjectName("sensorHead")
+        self._toggle.setCheckable(True)
+        self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle.clicked.connect(self._on_toggle)
+
+        head = QHBoxLayout(self._toggle)
+        head.setContentsMargins(16, 12, 16, 12)
+        head.setSpacing(10)
+
+        mono_lbl = QLabel(mono)
+        mono_lbl.setStyleSheet(
+            f"color:{ACCENT}; background:{ACCENT_DIM}; font-size:7.5pt; "
+            f"font-weight:700; padding:4px 6px; border-radius:5px;"
+        )
+        head.addWidget(mono_lbl)
+
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet("font-weight:700; font-size:10.5pt;")
+        head.addWidget(name_lbl)
+        head.addStretch()
+
+        self._summary_lbl = QLabel("—")
+        self._summary_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        head.addWidget(self._summary_lbl)
+
+        self._chevron = QLabel("▾")
+        self._chevron.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        head.addWidget(self._chevron)
+
+        outer.addWidget(self._toggle)
+
+        self._body = QWidget()
+        self._body_lay = QGridLayout(self._body)
+        self._body_lay.setContentsMargins(16, 4, 16, 14)
+        self._body_lay.setSpacing(7)
+        self._body.setVisible(False)
+        outer.addWidget(self._body)
+
+        for label in static_labels:
+            self._add_cell(label)
+
+    def _add_cell(self, label: str) -> SensorCell:
+        cell = SensorCell(label)
+        self._cells[label] = cell
+        row, col = divmod(self._cell_count, self._COLS)
+        self._body_lay.addWidget(cell, row, col)
+        self._cell_count += 1
+        return cell
+
+    def _on_toggle(self, checked: bool):
+        self._body.setVisible(checked)
+        self._chevron.setText("▴" if checked else "▾")
+
+    def set_summary(self, text: str):
+        self._summary_lbl.setText(text)
+
+    def set_value(self, label: str, text: str):
+        cell = self._cells.get(label) or self._add_cell(label)
+        cell.set_value(text)
+
+
 # ── Background worker ───────────────────────────────────────────────────────────
 class TempWorker(QThread):
-    ready = pyqtSignal(tuple, tuple, object, bool, list)
+    ready = pyqtSignal(tuple, tuple, object, bool, list, dict)
 
     def run(self):
-        temps, fans = get_temperatures()
+        temps, fans, sensors = get_temperatures()
         ram         = get_ram_usage()
         battery     = get_xbox_battery()
         hdr         = get_hdr_state()
-        self.ready.emit(temps, ram, battery, hdr, fans)
+        self.ready.emit(temps, ram, battery, hdr, fans, sensors)
 
 
 # ── RTSS FPS cap dialog ─────────────────────────────────────────────────────────
@@ -1508,7 +1702,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(stats_w)
 
-        # ── Tabs (Monitors / Fans) ────────────────────────────────────────
+        # ── Tabs (Monitors / Fans / Sensors) ────────────────────────────────
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
@@ -1526,19 +1720,51 @@ class MainWindow(QMainWindow):
         mon_scroll.setWidget(self._scroll_content)
         self._tabs.addTab(mon_scroll, "Monitors")
 
-        # Fans tab
+        # Fans tab — 2-column grid of ring-gauge tiles
         fan_scroll = QScrollArea()
         fan_scroll.setWidgetResizable(True)
         fan_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         fan_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._fans_content = QWidget()
         self._fans_content.setObjectName("scrollContent")
-        self._fans_layout = QVBoxLayout(self._fans_content)
-        self._fans_layout.setContentsMargins(16, 12, 16, 12)
+        fans_outer = QVBoxLayout(self._fans_content)
+        fans_outer.setContentsMargins(16, 12, 16, 12)
+        fans_outer.setSpacing(0)
+
+        self._fans_grid_host = QWidget()
+        self._fans_layout = QGridLayout(self._fans_grid_host)
+        self._fans_layout.setContentsMargins(0, 0, 0, 0)
         self._fans_layout.setSpacing(10)
-        self._fans_layout.addStretch()
+        fans_outer.addWidget(self._fans_grid_host, alignment=Qt.AlignmentFlag.AlignTop)
+        fans_outer.addStretch()
+
         fan_scroll.setWidget(self._fans_content)
         self._tabs.addTab(fan_scroll, "Fans")
+
+        # Sensors tab — expandable per-component readouts (HWiNFO-style)
+        sensors_scroll = QScrollArea()
+        sensors_scroll.setWidgetResizable(True)
+        sensors_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sensors_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sensors_content = QWidget()
+        sensors_content.setObjectName("scrollContent")
+        sensors_layout = QVBoxLayout(sensors_content)
+        sensors_layout.setContentsMargins(16, 12, 16, 12)
+        sensors_layout.setSpacing(10)
+
+        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"])
+        self._sensor_gpu = SensorCard(
+            "GPU", "Graphics",
+            ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
+        )
+        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available"])
+        self._sensor_mb  = SensorCard("MB", "Motherboard", ["Chipset", "VRM"])
+        for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
+            sensors_layout.addWidget(card)
+        sensors_layout.addStretch()
+
+        sensors_scroll.setWidget(sensors_content)
+        self._tabs.addTab(sensors_scroll, "Sensors")
 
         root.addWidget(self._tabs, 1)
 
@@ -1695,7 +1921,7 @@ class MainWindow(QMainWindow):
             self._worker.ready.connect(self._apply_temps)
             self._worker.start()
 
-    def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool, fans: list):
+    def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool, fans: list, sensors: dict):
         (cpu_temp, cpu_load, cpu_power,
          gpu_temp, gpu_load, gpu_power,
          gpu_mem_used, gpu_mem_total) = temps
@@ -1721,26 +1947,26 @@ class MainWindow(QMainWindow):
         self._chip_ctrl.set_value(battery if battery else "—")
         self._apply_hdr_color(hdr)
         self._update_fans(fans)
+        self._update_sensors(temps, ram, sensors)
 
     def _update_fans(self, fans: list):
         current = set(self._fan_rows.keys())
         incoming = {f["name"] for f in fans}
         if current != incoming:
-            # Rebuild fan list
-            while self._fans_layout.count() > 1:
+            # Rebuild fan grid
+            while self._fans_layout.count():
                 item = self._fans_layout.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
             self._fan_rows.clear()
-            for f in fans:
+            for idx, f in enumerate(fans):
                 sname = f["name"]
                 display = self._fan_names.get(sname, sname)
-                row = FanRow(sname, f["rpm"], display, self._fans_content)
-                row.renamed.connect(self._on_fan_renamed)
-                self._fans_layout.insertWidget(
-                    self._fans_layout.count() - 1, row
-                )
-                self._fan_rows[sname] = row
+                tile = FanTile(sname, f["rpm"], display, self._fans_grid_host)
+                tile.renamed.connect(self._on_fan_renamed)
+                row, col = divmod(idx, 2)
+                self._fans_layout.addWidget(tile, row, col)
+                self._fan_rows[sname] = tile
         else:
             for f in fans:
                 self._fan_rows[f["name"]].update_rpm(f["rpm"])
@@ -1748,6 +1974,65 @@ class MainWindow(QMainWindow):
     def _on_fan_renamed(self, sensor_name: str, new_name: str):
         self._fan_names[sensor_name] = new_name
         save_fan_names(self._fan_names)
+
+    def _update_sensors(self, temps: tuple, ram: tuple, sensors: dict):
+        (cpu_temp, cpu_load, _cpu_power,
+         gpu_temp, gpu_load, gpu_power,
+         gpu_mem_used, gpu_mem_total) = temps
+        ram_used, ram_total = ram
+
+        cpu_summary = f"{cpu_temp:.0f}°C" if cpu_temp is not None else "N/A"
+        if cpu_load is not None:
+            cpu_summary += f"  ·  {cpu_load:.0f}%"
+        self._sensor_cpu.set_summary(cpu_summary)
+        self._sensor_cpu.set_value("Package", f"{cpu_temp:.0f}°C" if cpu_temp is not None else "—")
+        self._sensor_cpu.set_value(
+            "Voltage",
+            f"{sensors.get('cpu_voltage'):.3f} V" if sensors.get("cpu_voltage") is not None else "—",
+        )
+        for core in sensors.get("cpu_cores", []):
+            clock = core.get("clock")
+            load  = core.get("load")
+            parts = []
+            if clock is not None:
+                parts.append(f"{clock/1000:.1f}GHz" if clock > 100 else f"{clock:.1f}GHz")
+            if load is not None:
+                parts.append(f"{load:.0f}%")
+            self._sensor_cpu.set_value(f"Core {core.get('index')}", "  ·  ".join(parts) or "—")
+
+        gpu_summary_parts = []
+        if gpu_temp is not None:
+            gpu_summary_parts.append(f"{gpu_temp:.0f}°C")
+        if gpu_load is not None:
+            gpu_summary_parts.append(f"{gpu_load:.0f}%")
+        if gpu_mem_used is not None and gpu_mem_total is not None:
+            gpu_summary_parts.append(f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)}GB")
+        self._sensor_gpu.set_summary("  ·  ".join(gpu_summary_parts) or "N/A")
+        self._sensor_gpu.set_value("Core", f"{gpu_temp:.0f}°C" if gpu_temp is not None else "—")
+        self._sensor_gpu.set_value("Hotspot", self._fmt(sensors.get("gpu_hotspot"), "°C"))
+        self._sensor_gpu.set_value("Mem Junction", self._fmt(sensors.get("gpu_mem_junction"), "°C"))
+        self._sensor_gpu.set_value("Core Clock", self._fmt(sensors.get("gpu_core_clock"), " MHz", 0))
+        self._sensor_gpu.set_value("Mem Clock", self._fmt(sensors.get("gpu_mem_clock"), " MHz", 0))
+        self._sensor_gpu.set_value("Power", f"{gpu_power:.0f} W" if gpu_power is not None else "—")
+        self._sensor_gpu.set_value("Fan", self._fmt(sensors.get("gpu_fan_pct"), "%", 0))
+        if gpu_mem_used is not None and gpu_mem_total is not None:
+            self._sensor_gpu.set_value("VRAM", f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB")
+        self._sensor_gpu.set_value("PCIe Load", self._fmt(sensors.get("gpu_pcie_load"), "%", 0))
+
+        self._sensor_ram.set_summary(f"{ram_used:.1f}/{ram_total} GB")
+        self._sensor_ram.set_value("Used", f"{ram_used:.1f} GB")
+        self._sensor_ram.set_value("Available", f"{ram_total - ram_used:.1f} GB")
+
+        mb_chipset = sensors.get("mb_chipset_temp")
+        self._sensor_mb.set_summary(f"{mb_chipset:.0f}°C" if mb_chipset is not None else "—")
+        self._sensor_mb.set_value("Chipset", self._fmt(mb_chipset, "°C"))
+        self._sensor_mb.set_value("VRM", self._fmt(sensors.get("mb_vrm_temp"), "°C"))
+        for rail, value in sensors.get("mb_voltages", {}).items():
+            self._sensor_mb.set_value(rail, self._fmt(value, " V", 2))
+
+    @staticmethod
+    def _fmt(value, unit: str, digits: int = 1) -> str:
+        return f"{value:.{digits}f}{unit}" if value is not None else "—"
 
     def _refresh_hdr_btn(self):
         hdr = get_hdr_state()
