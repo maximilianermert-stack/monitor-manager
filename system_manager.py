@@ -1090,14 +1090,12 @@ QFrame#sensorCell {{
     border-radius: 6px;
     border: 1px solid {BORDER};
 }}
-QPushButton#sensorHead {{
+QFrame#sensorHead {{
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 0;
-    text-align: left;
 }}
-QPushButton#sensorHead:hover {{ background: {SURFACE}; }}
+QFrame#sensorHead:hover {{ background: {SURFACE}; }}
 QWidget#scrollContent {{ background: transparent; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{
@@ -1465,6 +1463,17 @@ class FanTile(QFrame):
 
 
 # ── Sensor cell + card widgets ──────────────────────────────────────────────────
+class ClickableFrame(QFrame):
+    """A QFrame that emits `clicked` on mouse press. Used as a collapsible
+    card header — unlike a QPushButton, a QFrame lays out and sizes its child
+    widgets correctly, so the header (and thus the whole card) stays visible."""
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class SensorCell(QFrame):
     def __init__(self, label: str, parent=None):
         super().__init__(parent)
@@ -1503,9 +1512,9 @@ class SensorCard(QFrame):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        self._toggle = QPushButton()
+        self._expanded = False
+        self._toggle = ClickableFrame()
         self._toggle.setObjectName("sensorHead")
-        self._toggle.setCheckable(True)
         self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle.clicked.connect(self._on_toggle)
 
@@ -1553,9 +1562,10 @@ class SensorCard(QFrame):
         self._cell_count += 1
         return cell
 
-    def _on_toggle(self, checked: bool):
-        self._body.setVisible(checked)
-        self._chevron.setText("▴" if checked else "▾")
+    def _on_toggle(self):
+        self._expanded = not self._expanded
+        self._body.setVisible(self._expanded)
+        self._chevron.setText("▴" if self._expanded else "▾")
 
     def set_summary(self, text: str):
         self._summary_lbl.setText(text)
