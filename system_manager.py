@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
-    QGraphicsDropShadowEffect, QTabWidget,
+    QGraphicsDropShadowEffect, QTabWidget, QFileDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect
 from PyQt6.QtGui import (
@@ -200,10 +200,13 @@ def get_temperatures():
         gpu_mem_total = data.get("gpu_mem_total")
         fans          = [{"name": f["name"], "rpm": int(f["rpm"])}
                          for f in data.get("fans", []) if f.get("rpm", 0) > 0]
-        # DEBUG: write hardware list to temp file for diagnosis
+        # DEBUG: write hardware list next to the exe (a known, findable spot —
+        # an elevated process's %TEMP% resolves to an unpredictable location).
         try:
-            import tempfile, pathlib
-            pathlib.Path(tempfile.gettempdir(), "mm_debug_hw.txt").write_text(
+            import pathlib
+            base_dir = (os.path.dirname(sys.executable)
+                        if getattr(sys, "frozen", False) else tempfile.gettempdir())
+            pathlib.Path(base_dir, "mm_debug_hw.txt").write_text(
                 "\n".join(data.get("debug_hw", [])), encoding="utf-8"
             )
         except Exception:
@@ -1881,6 +1884,7 @@ class MainWindow(QMainWindow):
         self._autostart_action.setChecked(get_autostart())
         self._autostart_action.triggered.connect(self._on_toggle_autostart)
         m.addSeparator()
+        m.addAction("Save Debug Info…", self._on_save_debug)
         m.addAction("Check for Updates", self._on_check_update)
 
         self._misc_menu = m
@@ -2215,6 +2219,49 @@ class MainWindow(QMainWindow):
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(zip_path)
         self._quit()
+
+    def _on_save_debug(self):
+        """Run TempReader and dump everything (raw output, errors, full sensor
+        list) to a file the user picks. Diagnoses both a crashing TempReader
+        (no/garbled output) and sensor-name matching (the full hardware dump)."""
+        lines = []
+        exe = _tempreader_path()
+        lines.append(f"TempReader path : {exe}")
+        lines.append(f"Exists          : {os.path.exists(exe)}")
+        lines.append(f"Frozen          : {getattr(sys, 'frozen', False)}")
+        lines.append(f"Executable      : {sys.executable}")
+        try:
+            result = subprocess.run(
+                [exe], capture_output=True, text=True,
+                timeout=15, creationflags=CREATE_NO_WINDOW,
+            )
+            lines.append(f"Return code     : {result.returncode}")
+            lines.append("\n--- STDERR ---")
+            lines.append(result.stderr.strip() or "(empty)")
+            lines.append("\n--- STDOUT (raw) ---")
+            lines.append(result.stdout.strip() or "(empty)")
+            try:
+                data = json.loads(result.stdout.strip())
+                lines.append("\n--- HARDWARE / SENSORS ---")
+                lines.extend(str(x) for x in data.get("debug_hw", []))
+            except Exception as e:
+                lines.append(f"\n(could not parse JSON: {e})")
+        except Exception as e:
+            lines.append(f"\nERROR running TempReader: {e!r}")
+
+        text = "\n".join(lines)
+        default = os.path.join(os.path.expanduser("~"), "SystemManager_debug.txt")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Debug Info", default, "Text Files (*.txt)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.startfile(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Debug", f"Could not save debug file:\n{e}")
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────
