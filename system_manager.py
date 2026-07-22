@@ -134,6 +134,31 @@ def get_ram_usage():
     return round(used, 1), round(total)
 
 
+_ram_speed_cache = None   # None = not queried yet; int (MT/s) or 0 once resolved
+
+def get_ram_speed() -> int:
+    """Configured RAM speed in MT/s via WMI. Static value — queried once and
+    cached, so it adds no per-poll cost. Returns 0 if unavailable."""
+    global _ram_speed_cache
+    if _ram_speed_cache is not None:
+        return _ram_speed_cache
+    _ram_speed_cache = 0
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-CimInstance Win32_PhysicalMemory | "
+             "Measure-Object -Property ConfiguredClockSpeed -Maximum).Maximum"],
+            capture_output=True, text=True, timeout=12,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        val = result.stdout.strip()
+        if val:
+            _ram_speed_cache = int(float(val))
+    except Exception:
+        pass
+    return _ram_speed_cache
+
+
 def get_xbox_battery():
     """Return battery level string for first connected wireless Xbox controller, or None."""
     BATTERY_DEVTYPE_GAMEPAD   = 0x00
@@ -1587,6 +1612,7 @@ class TempWorker(QThread):
         ram         = get_ram_usage()
         battery     = get_xbox_battery()
         hdr         = get_hdr_state()
+        sensors["ram_speed"] = get_ram_speed()   # cached after first call
         self.ready.emit(temps, ram, battery, hdr, fans, sensors)
 
 
@@ -1813,7 +1839,7 @@ class MainWindow(QMainWindow):
             "GPU", "Graphics",
             ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
         )
-        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available"])
+        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"])
         self._sensor_mb  = SensorCard("MB", "Motherboard", ["Chipset", "VRM"])
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
@@ -2076,9 +2102,14 @@ class MainWindow(QMainWindow):
             self._sensor_gpu.set_value("VRAM", f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB")
         self._sensor_gpu.set_value("PCIe Load", self._fmt(sensors.get("gpu_pcie_load"), "%", 0))
 
-        self._sensor_ram.set_summary(f"{ram_used:.1f}/{ram_total} GB")
+        ram_speed = sensors.get("ram_speed") or 0
+        ram_summary = f"{ram_used:.1f}/{ram_total} GB"
+        if ram_speed:
+            ram_summary += f"  ·  {ram_speed} MT/s"
+        self._sensor_ram.set_summary(ram_summary)
         self._sensor_ram.set_value("Used", f"{ram_used:.1f} GB")
         self._sensor_ram.set_value("Available", f"{ram_total - ram_used:.1f} GB")
+        self._sensor_ram.set_value("Speed", f"{ram_speed} MT/s" if ram_speed else "—")
 
         mb_chipset = sensors.get("mb_chipset_temp")
         self._sensor_mb.set_summary(f"{mb_chipset:.0f}°C" if mb_chipset is not None else "—")
