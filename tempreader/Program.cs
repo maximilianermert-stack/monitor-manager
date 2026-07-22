@@ -200,38 +200,44 @@ foreach (var hw in computer.Hardware)
 
 computer.Close();
 
-// nvidia-smi fallback for GPU load and VRAM (LHM 0.9.4 lacks Blackwell support)
-if (gpuLoad == null || gpuLoad == 0 || gpuMemTotal == null || gpuMemTotal == 0)
+// nvidia-smi is the authoritative source for NVIDIA temp/load/VRAM. LHM 0.9.4
+// misreads Blackwell (RTX 50) — the GPU temperature in particular comes out
+// wrong (e.g. ~CPU temp) — so when nvidia-smi is present we prefer its GPU
+// temperature outright, and use its load/VRAM to fill any gaps LHM left.
+try
 {
-    try
+    var psi = new ProcessStartInfo
     {
-        var psi = new ProcessStartInfo
+        FileName               = "nvidia-smi",
+        Arguments              = "--query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
+        RedirectStandardOutput = true,
+        UseShellExecute        = false,
+        CreateNoWindow         = true,
+    };
+    using var proc = Process.Start(psi)!;
+    var line = proc.StandardOutput.ReadLine();
+    proc.WaitForExit(3000);
+    if (line != null)
+    {
+        var parts = line.Split(',');
+        if (parts.Length >= 4)
         {
-            FileName               = "nvidia-smi",
-            Arguments              = "--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
-            RedirectStandardOutput = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true,
-        };
-        using var proc = Process.Start(psi)!;
-        var line = proc.StandardOutput.ReadLine();
-        proc.WaitForExit(3000);
-        if (line != null)
-        {
-            var parts = line.Split(',');
-            if (parts.Length >= 3
-                && float.TryParse(parts[0].Trim(), out float smiLoad)
-                && float.TryParse(parts[1].Trim(), out float smiMemUsed)
-                && float.TryParse(parts[2].Trim(), out float smiMemTotal))
+            if (float.TryParse(parts[0].Trim(), out float smiTemp))
+                gpuTemp = smiTemp;   // authoritative on NVIDIA; overrides LHM's bad Blackwell read
+            if (float.TryParse(parts[1].Trim(), out float smiLoad)
+                && (gpuLoad == null || gpuLoad == 0))
+                gpuLoad = smiLoad;
+            if (float.TryParse(parts[2].Trim(), out float smiMemUsed)
+                && float.TryParse(parts[3].Trim(), out float smiMemTotal)
+                && (gpuMemTotal == null || gpuMemTotal == 0))
             {
-                gpuLoad     = smiLoad;
                 gpuMemUsed  = smiMemUsed;
                 gpuMemTotal = smiMemTotal;
             }
         }
     }
-    catch { }
 }
+catch { }
 
 var cpuCores = System.Linq.Enumerable.Select(
     System.Linq.Enumerable.OrderBy(cpuCoreData, kv => kv.Key),
