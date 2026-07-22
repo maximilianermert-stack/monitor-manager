@@ -65,20 +65,28 @@ foreach (var hw in computer.Hardware)
 
         if (isCpu)
         {
-            if (sensor.SensorType == SensorType.Temperature && sensor.Value > 0 && !cpuTempLocked)
+            if (sensor.SensorType == SensorType.Temperature && sensor.Value > 0)
             {
-                // Skip 0-reading sensors (idle/parked CCDs, unused probes) that
-                // would otherwise mask the real temperature. Prefer the definitive
-                // package/die sensor and lock onto it; otherwise take the first
-                // positive reading and let a preferred sensor upgrade it later.
-                bool preferred = sensor.Name.Contains("Package")
-                              || sensor.Name.Contains("Tctl")
-                              || sensor.Name.Contains("Tdie")
-                              || sensor.Name.Contains("Average");
-                if (preferred || cpuTemp == null)
+                // On AMD, "Core (Tctl/Tdie)" is the sensor to display; only it
+                // carries "Tctl" (per-CCD sensors are "CCDx (Tdie)" only), so we
+                // treat Tctl as definitive and let it win regardless of order.
+                // Intel's "CPU Package" is the equivalent definitive sensor.
+                // Everything else is a fallback, and 0-value readings (parked
+                // CCDs, unused probes) are skipped so they can't mask the real temp.
+                bool definitive = sensor.Name.Contains("Tctl")
+                               || sensor.Name.Contains("Package");
+                if (definitive)
+                {
                     cpuTemp = sensor.Value;
-                if (preferred)
                     cpuTempLocked = true;
+                }
+                else if (!cpuTempLocked)
+                {
+                    bool preferred = sensor.Name.Contains("Tdie")
+                                  || sensor.Name.Contains("Average");
+                    if (preferred || cpuTemp == null)
+                        cpuTemp = sensor.Value;
+                }
             }
             else if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
                 cpuLoad = sensor.Value;
