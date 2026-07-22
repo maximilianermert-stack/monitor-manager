@@ -41,14 +41,23 @@ var cpuCoreData = new System.Collections.Generic.Dictionary<int, (float? clock, 
 var fans    = new System.Collections.Generic.List<object>();
 var debugHw = new System.Collections.Generic.List<string>();
 
+// Systems with an AMD/Intel CPU often expose an integrated GPU alongside the
+// discrete card. The iGPU sits on the CPU die, so its "GPU" temperature is
+// really the CPU temperature — picking it makes GPU temp track CPU temp. When
+// a discrete NVIDIA GPU is present, treat only it as "the GPU".
+bool hasNvidia = System.Linq.Enumerable.Any(
+    computer.Hardware, h => h.HardwareType == HardwareType.GpuNvidia);
+
 foreach (var hw in computer.Hardware)
 {
     hw.Update();
 
     bool isCpu = hw.HardwareType == HardwareType.Cpu;
-    bool isGpu = hw.HardwareType is HardwareType.GpuNvidia
-                                 or HardwareType.GpuAmd
-                                 or HardwareType.GpuIntel;
+    bool isGpu = hasNvidia
+        ? hw.HardwareType == HardwareType.GpuNvidia
+        : hw.HardwareType is HardwareType.GpuAmd
+                          or HardwareType.GpuIntel
+                          or HardwareType.GpuNvidia;
     bool isMb  = hw.HardwareType == HardwareType.Motherboard;
 
     debugHw.Add($"{hw.HardwareType}:{hw.Name}");
