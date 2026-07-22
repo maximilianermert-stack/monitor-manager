@@ -131,18 +131,28 @@ foreach (var hw in computer.Hardware)
                 if (sensor.Name.Contains("Hot Spot"))
                     gpuHotspot = sensor.Value;
                 else if (sensor.Name.Contains("Memory Junction"))
-                    gpuMemJunction = sensor.Value;
+                {
+                    // 255 is LHM's "sensor unavailable" sentinel on Blackwell — ignore it.
+                    if (sensor.Value < 250)
+                        gpuMemJunction = sensor.Value;
+                }
                 else if (gpuTemp == null)
                 {
                     gpuTemp = sensor.Value;
                     gpuName = hw.Name;
                 }
             }
+            else if (sensor.SensorType == SensorType.Fan)
+                // Discrete GPU fans (e.g. "GPU Fan 1"). Included even at 0 RPM
+                // (zero-fan idle mode) so the Fans tab isn't empty on boards
+                // whose motherboard SuperIO LHM can't read.
+                fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
             else if (sensor.SensorType == SensorType.Load)
             {
                 if (gpuLoad == null && sensor.Name.Contains("Core"))
                     gpuLoad = sensor.Value;
-                else if (gpuPcieLoad == null && sensor.Name.Contains("PCIe"))
+                else if (gpuPcieLoad == null
+                         && (sensor.Name.Contains("PCIe") || sensor.Name.Contains("Bus")))
                     gpuPcieLoad = sensor.Value;
             }
             else if (sensor.SensorType == SensorType.Clock)

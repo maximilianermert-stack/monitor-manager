@@ -198,8 +198,11 @@ def get_temperatures():
         gpu_power     = data.get("gpu_power")
         gpu_mem_used  = data.get("gpu_mem_used")
         gpu_mem_total = data.get("gpu_mem_total")
+        # TempReader already filters motherboard headers to connected ones
+        # (>0) but includes discrete GPU fans even at 0 RPM (zero-fan idle),
+        # so don't drop 0-RPM entries here.
         fans          = [{"name": f["name"], "rpm": int(f["rpm"])}
-                         for f in data.get("fans", []) if f.get("rpm", 0) > 0]
+                         for f in data.get("fans", [])]
         # DEBUG: write hardware list next to the exe (a known, findable spot —
         # an elevated process's %TEMP% resolves to an unpredictable location).
         try:
