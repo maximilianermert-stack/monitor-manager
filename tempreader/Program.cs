@@ -13,6 +13,7 @@ var computer = new Computer
 computer.Open();
 
 float? cpuTemp     = null;
+bool   cpuTempLocked = false;   // set once a definitive die/package sensor is found
 float? cpuLoad     = null;
 float? cpuPower    = null;
 float? cpuVoltage  = null;
@@ -51,6 +52,8 @@ foreach (var hw in computer.Hardware)
     bool isMb  = hw.HardwareType == HardwareType.Motherboard;
 
     debugHw.Add($"{hw.HardwareType}:{hw.Name}");
+    foreach (var s in hw.Sensors)
+        debugHw.Add($"  {s.SensorType}/{s.Name}={s.Value}");
     foreach (var sub in hw.SubHardware)
         debugHw.Add($"  sub:{sub.HardwareType}:{sub.Name}:{string.Join(",", System.Linq.Enumerable.Select(sub.Sensors, s => $"{s.SensorType}/{s.Name}={s.Value}"))}");
 
@@ -62,12 +65,20 @@ foreach (var hw in computer.Hardware)
 
         if (isCpu)
         {
-            if (sensor.SensorType == SensorType.Temperature)
+            if (sensor.SensorType == SensorType.Temperature && sensor.Value > 0 && !cpuTempLocked)
             {
-                if (sensor.Name.Contains("Package") || sensor.Name.Contains("Average"))
+                // Skip 0-reading sensors (idle/parked CCDs, unused probes) that
+                // would otherwise mask the real temperature. Prefer the definitive
+                // package/die sensor and lock onto it; otherwise take the first
+                // positive reading and let a preferred sensor upgrade it later.
+                bool preferred = sensor.Name.Contains("Package")
+                              || sensor.Name.Contains("Tctl")
+                              || sensor.Name.Contains("Tdie")
+                              || sensor.Name.Contains("Average");
+                if (preferred || cpuTemp == null)
                     cpuTemp = sensor.Value;
-                else if (cpuTemp == null)
-                    cpuTemp = sensor.Value;
+                if (preferred)
+                    cpuTempLocked = true;
             }
             else if (sensor.SensorType == SensorType.Load && sensor.Name == "CPU Total")
                 cpuLoad = sensor.Value;
