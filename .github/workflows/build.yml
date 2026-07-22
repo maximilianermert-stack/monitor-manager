@@ -49,7 +49,7 @@ jobs:
       - name: Build standalone EXE
         run: >
           pyinstaller
-          --onefile
+          --onedir
           --noupx
           --windowed
           --name "SystemManager"
@@ -61,12 +61,15 @@ jobs:
           --add-data "audioswitch_out;audioswitch"
           system_manager.py
 
+      - name: Package onedir bundle as zip
+        run: Compress-Archive -Path dist/SystemManager -DestinationPath dist/SystemManager.zip -Force
+
       - name: Upload artifact (auto build)
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: SystemManager-${{ github.sha }}
-          path: dist/SystemManager.exe
+          path: dist/SystemManager.zip
           retention-days: 30
 
       - name: Update latest release (auto build)
@@ -80,7 +83,7 @@ jobs:
             --title "Latest Build" `
             --notes "Auto-updated on every push to main. Commit: ${{ github.sha }}" `
             --prerelease `
-            dist/SystemManager.exe#SystemManager.exe
+            dist/SystemManager.zip#SystemManager.zip
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch'
@@ -90,4 +93,4 @@ jobs:
           gh release create "v${{ inputs.version }}" `
             --title "System Manager v${{ inputs.version }}" `
             --notes "${{ inputs.description }}" `
-            dist/SystemManager.exe#SystemManager-v${{ inputs.version }}.exe
+            dist/SystemManager.zip#SystemManager-v${{ inputs.version }}.zip

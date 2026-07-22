@@ -11,9 +11,11 @@ import threading
 import json
 import os
 import sys
+import time
 import tempfile
 import urllib.request
 import shutil
+import zipfile
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
@@ -921,9 +923,14 @@ _GITHUB_RELEASE_URL = (
 _DETACHED_PROCESS = 0x00000008
 
 
+def _install_dir() -> str:
+    """Folder holding the running SystemManager.exe (the --onedir bundle root)."""
+    return os.path.dirname(sys.executable)
+
+
 def download_update(progress_cb=None) -> tuple:
-    """Download latest exe from GitHub. Returns (ok, tmp_exe_path_or_error).
-    progress_cb(pct: int) is called periodically with 0-100 during download.
+    """Download the latest release .zip from GitHub. Returns (ok, zip_path_or_error).
+    progress_cb(text) is called periodically with a percentage or MB counter.
     """
     if not getattr(sys, "frozen", False):
         return False, "Auto-update only works when running as .exe"
@@ -933,18 +940,23 @@ def download_update(progress_cb=None) -> tuple:
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-        assets = [a for a in data.get("assets", []) if a["name"].endswith(".exe")]
+        assets = [a for a in data.get("assets", []) if a["name"].endswith(".zip")]
         if not assets:
-            return False, "No .exe found in latest release."
+            return False, "No .zip found in latest release."
         download_url = assets[0]["browser_download_url"]
-        tmp_exe = os.path.join(tempfile.gettempdir(), "SystemManager_new.exe")
+        # Stage the download inside the install dir so it is covered by any
+        # antivirus folder exclusion the user set for the app.
+        staging = os.path.join(_install_dir(), "_update")
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging, exist_ok=True)
+        zip_path = os.path.join(staging, "SystemManager.zip")
         dl_req = urllib.request.Request(
             download_url, headers={"User-Agent": "SystemManager-Updater/1.0"}
         )
-        with urllib.request.urlopen(dl_req, timeout=120) as dl:
+        with urllib.request.urlopen(dl_req, timeout=180) as dl:
             total = int(dl.headers.get("Content-Length") or 0)
             downloaded = 0
-            with open(tmp_exe, "wb") as f:
+            with open(zip_path, "wb") as f:
                 while True:
                     chunk = dl.read(65536)
                     if not chunk:
@@ -956,38 +968,77 @@ def download_update(progress_cb=None) -> tuple:
                             progress_cb(f"{min(99, downloaded * 100 // total)}%")
                         else:
                             progress_cb(f"{downloaded / (1024 * 1024):.1f} MB")
-        return True, tmp_exe
+        return True, zip_path
     except Exception as e:
         return False, str(e)
 
 
-def apply_update(tmp_exe: str):
-    """Swap exe files and relaunch.
-    Windows locks a running .exe against overwrite but allows rename,
-    so we rename the current exe out of the way, move the new one in,
-    then start the new process. The renamed .old file is removed by the
-    new process on its next startup (see MainWindow.__init__).
+def _find_bundle_root(extracted: str) -> str:
+    """Locate the folder containing SystemManager.exe inside an extracted zip."""
+    if os.path.exists(os.path.join(extracted, "SystemManager.exe")):
+        return extracted
+    for name in os.listdir(extracted):
+        cand = os.path.join(extracted, name)
+        if os.path.isdir(cand) and os.path.exists(os.path.join(cand, "SystemManager.exe")):
+            return cand
+    return extracted
+
+
+def apply_update(zip_path: str):
+    """Stage a --onedir update and hand off to the new build to finalize it.
+
+    A running app can't overwrite its own loaded DLLs, so we extract the new
+    build next to the current one (inside the install dir, so it's covered by
+    the user's AV exclusion), then launch the *staged* exe with --finalize-update.
+    That fresh process copies its files over the install dir once this process
+    has exited, then relaunches from the canonical location. No cmd/batch is
+    spawned — the whole handoff is plain in-process Python, which avoids the
+    dropper-style signatures heuristic AV scanners look for.
     """
-    import shutil
-    current_exe = sys.executable
-    old_exe     = current_exe + ".old"
     try:
-        # Remove leftover .old from a previous update if present
-        if os.path.exists(old_exe):
+        staging = os.path.dirname(zip_path)           # <install>\_update
+        extracted = os.path.join(staging, "extracted")
+        shutil.rmtree(extracted, ignore_errors=True)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(extracted)
+        staged_root = _find_bundle_root(extracted)
+        staged_exe = os.path.join(staged_root, "SystemManager.exe")
+        if not os.path.exists(staged_exe):
+            return
+        subprocess.Popen(
+            [staged_exe, "--finalize-update", _install_dir()],
+            creationflags=_DETACHED_PROCESS,
+        )
+    except Exception:
+        pass
+
+
+def finalize_update(target_dir: str):
+    """Run from the staged build: copy our files over the old install dir once
+    it's unlocked, then relaunch the app from its canonical location."""
+    staged_root = _install_dir()   # we're the staged exe, so this is the staging bundle
+    try:
+        # Wait for the previous process to exit and release its file locks,
+        # retrying the copy rather than guessing a fixed delay.
+        last_err = None
+        for _ in range(60):        # up to ~30s
             try:
-                os.unlink(old_exe)
-            except Exception:
-                pass
-        # Rename the running exe (rename is allowed while exe is running)
-        os.rename(current_exe, old_exe)
-        # Place the downloaded exe at the original path
-        shutil.move(tmp_exe, current_exe)
-        # Start the new version (inherits elevated token, no UAC prompt needed)
-        subprocess.Popen([current_exe], creationflags=_DETACHED_PROCESS)
-        # The leftover .old file is deleted by the new process on its next
-        # startup (see MainWindow.__init__). We deliberately avoid spawning a
-        # cmd/batch that sleeps then self-deletes files — that pattern is a
-        # classic dropper signature that trips heuristic AV scanners.
+                for root, _dirs, files in os.walk(staged_root):
+                    rel = os.path.relpath(root, staged_root)
+                    dest_root = os.path.join(target_dir, rel) if rel != "." else target_dir
+                    os.makedirs(dest_root, exist_ok=True)
+                    for fn in files:
+                        shutil.copy2(os.path.join(root, fn), os.path.join(dest_root, fn))
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.5)
+        if last_err is None:
+            subprocess.Popen(
+                [os.path.join(target_dir, "SystemManager.exe")],
+                creationflags=_DETACHED_PROCESS,
+            )
     except Exception:
         pass
 
@@ -1623,14 +1674,11 @@ class MainWindow(QMainWindow):
         self.refresh_monitors()
         self._worker.start()
 
-        # Clean up leftover .old exe from a previous update
+        # Clean up the staging folder left behind by a completed update
         if getattr(sys, "frozen", False):
-            old_exe = sys.executable + ".old"
-            if os.path.exists(old_exe):
-                try:
-                    os.unlink(old_exe)
-                except Exception:
-                    pass
+            staging = os.path.join(os.path.dirname(sys.executable), "_update")
+            if os.path.isdir(staging):
+                shutil.rmtree(staging, ignore_errors=True)
 
         self._temp_timer = QTimer(self)
         self._temp_timer.timeout.connect(self._kick_worker)
@@ -2161,16 +2209,25 @@ class MainWindow(QMainWindow):
                                      result or "Could not download update."),
             ))
 
-    def _finish_update(self, tmp_exe: str):
+    def _finish_update(self, zip_path: str):
         self.setWindowTitle("System Manager")
         QMessageBox.information(self, "Update",
                                 "Update downloaded!\nThe app will now restart.")
-        apply_update(tmp_exe)
+        apply_update(zip_path)
         self._quit()
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Update finalizer: launched from a freshly-extracted build to copy itself
+    # over the old install dir, then relaunch. Runs headless, before any GUI.
+    if "--finalize-update" in sys.argv:
+        _i = sys.argv.index("--finalize-update")
+        _target = sys.argv[_i + 1] if _i + 1 < len(sys.argv) else None
+        if _target:
+            finalize_update(_target)
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_QSS)
     app.setQuitOnLastWindowClosed(False)
