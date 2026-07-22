@@ -965,7 +965,8 @@ def apply_update(tmp_exe: str):
     """Swap exe files and relaunch.
     Windows locks a running .exe against overwrite but allows rename,
     so we rename the current exe out of the way, move the new one in,
-    then start the new process. A cleanup batch removes the .old file later.
+    then start the new process. The renamed .old file is removed by the
+    new process on its next startup (see MainWindow.__init__).
     """
     import shutil
     current_exe = sys.executable
@@ -983,19 +984,10 @@ def apply_update(tmp_exe: str):
         shutil.move(tmp_exe, current_exe)
         # Start the new version (inherits elevated token, no UAC prompt needed)
         subprocess.Popen([current_exe], creationflags=_DETACHED_PROCESS)
-        # Small cleanup batch: delete the .old file after old process exits
-        bat = os.path.join(tempfile.gettempdir(), "mm_cleanup.bat")
-        with open(bat, "w") as f:
-            f.write(
-                f"@echo off\n"
-                f"ping -n 5 127.0.0.1 >NUL\n"
-                f"del \"{old_exe}\" >NUL 2>&1\n"
-                f"del \"%~f0\"\n"
-            )
-        subprocess.Popen(
-            ["cmd", "/c", bat],
-            creationflags=CREATE_NO_WINDOW | _DETACHED_PROCESS,
-        )
+        # The leftover .old file is deleted by the new process on its next
+        # startup (see MainWindow.__init__). We deliberately avoid spawning a
+        # cmd/batch that sleeps then self-deletes files — that pattern is a
+        # classic dropper signature that trips heuristic AV scanners.
     except Exception:
         pass
 
