@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
-    QGraphicsDropShadowEffect, QTabWidget, QFileDialog,
+    QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect
 from PyQt6.QtGui import (
@@ -1177,14 +1177,74 @@ def finalize_update(target_dir: str):
 
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
-BG      = "#0d0f14"
-SURFACE = "#151820"
-CARD    = "#1c2030"
-BORDER  = "#252a3d"
-ACCENT  = "#7c8cf8"
-ACCENT_DIM = "#2a2a4a"
-TEXT    = "#e2e8f0"
-SUBTEXT = "#64748b"
+# 8 named presets (each a full dark palette) + a "Custom" mode where the user
+# picks a primary (accent) and secondary (base tint) colour. Semantic status
+# colours (green/red/amber/blue/peach) stay fixed — they carry meaning.
+THEME_PRESETS = {
+    "Indigo":  {"accent":"#818cf8","accent_dim":"#2a2a4a","bg":"#0b0d12","surface":"#12151d","card":"#181c28","card_hi":"#1e2333","border":"#262b3d","border_hi":"#34395a"},
+    "Violet":  {"accent":"#a78bfa","accent_dim":"#2f2540","bg":"#0c0a12","surface":"#15111d","card":"#1d1728","card_hi":"#241d33","border":"#2e2540","border_hi":"#413458"},
+    "Sky":     {"accent":"#38bdf8","accent_dim":"#0e3348","bg":"#0a0e12","surface":"#101820","card":"#15222c","card_hi":"#1b2d3a","border":"#233846","border_hi":"#2f4d63"},
+    "Teal":    {"accent":"#2dd4bf","accent_dim":"#0e3a35","bg":"#080f0e","surface":"#0f1a18","card":"#142422","card_hi":"#1a2f2b","border":"#223a36","border_hi":"#2e514b"},
+    "Emerald": {"accent":"#34d399","accent_dim":"#123a2b","bg":"#0a0f0d","surface":"#101a16","card":"#152420","card_hi":"#1b2f28","border":"#233a33","border_hi":"#2f5147"},
+    "Amber":   {"accent":"#fbbf24","accent_dim":"#3d2e12","bg":"#100e0a","surface":"#1a1710","card":"#241f15","card_hi":"#2f281b","border":"#3a3223","border_hi":"#51452f"},
+    "Crimson": {"accent":"#fb7185","accent_dim":"#3d1a22","bg":"#100b0d","surface":"#1a1216","card":"#24171c","card_hi":"#2f1d24","border":"#3a2530","border_hi":"#512f3d"},
+    "Slate":   {"accent":"#94a3b8","accent_dim":"#2a3140","bg":"#0b0d10","surface":"#12151b","card":"#181c24","card_hi":"#1e2330","border":"#262b36","border_hi":"#343b4a"},
+}
+_BASE_SHADES  = {"bg":0.055,"surface":0.10,"card":0.15,"card_hi":0.21,"border":0.28,"border_hi":0.40}
+DEFAULT_THEME = {"preset":"Indigo","accent":"#818cf8","base":"#5b6b8c"}
+_THEME_FILE   = os.path.join(_FAN_NAMES_DIR, "theme.json")
+
+
+def _darken(hex_color: str, f: float) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return "#%02x%02x%02x" % (min(255, int(r * f)), min(255, int(g * f)), min(255, int(b * f)))
+
+
+def load_theme() -> dict:
+    try:
+        with open(_THEME_FILE, encoding="utf-8") as f:
+            t = json.load(f)
+        return {
+            "preset": t.get("preset", "Indigo"),
+            "accent": t.get("accent", DEFAULT_THEME["accent"]),
+            "base":   t.get("base",   DEFAULT_THEME["base"]),
+        }
+    except Exception:
+        return dict(DEFAULT_THEME)
+
+
+def save_theme(theme: dict):
+    os.makedirs(_FAN_NAMES_DIR, exist_ok=True)
+    with open(_THEME_FILE, "w", encoding="utf-8") as f:
+        json.dump(theme, f, indent=2)
+
+
+def resolve_palette(theme: dict) -> dict:
+    if theme.get("preset") == "Custom":
+        accent = theme.get("accent", DEFAULT_THEME["accent"])
+        base   = theme.get("base",   DEFAULT_THEME["base"])
+        pal = {k: _darken(base, v) for k, v in _BASE_SHADES.items()}
+        pal["accent"]     = accent
+        pal["accent_dim"] = _darken(accent, 0.28)
+        return pal
+    return dict(THEME_PRESETS.get(theme.get("preset"), THEME_PRESETS["Indigo"]))
+
+
+_PAL       = resolve_palette(load_theme())
+BG         = _PAL["bg"]
+SURFACE    = _PAL["surface"]
+CARD       = _PAL["card"]
+CARD_HI    = _PAL["card_hi"]
+BORDER     = _PAL["border"]
+BORDER_HI  = _PAL["border_hi"]
+ACCENT     = _PAL["accent"]
+ACCENT_DIM = _PAL["accent_dim"]
+ACCENT_BG  = _darken(ACCENT, 0.22)   # dark accent ground (accent-button hover)
+PRESSED    = _darken(CARD, 0.65)     # button pressed state
+# fixed semantic colours
+TEXT    = "#e8ecf3"
+SUBTEXT = "#6c7590"
 GREEN   = "#4ade80"
 RED     = "#f87171"
 AMBER   = "#fbbf24"
@@ -1246,8 +1306,8 @@ QPushButton {{
     border-radius: 6px;
     padding: 7px 16px;
 }}
-QPushButton:hover  {{ background: #252a3d; border-color: #3a4060; }}
-QPushButton:pressed {{ background: #13172a; }}
+QPushButton:hover  {{ background: {CARD_HI}; border-color: {BORDER_HI}; }}
+QPushButton:pressed {{ background: {PRESSED}; }}
 
 QPushButton#btnGreen  {{ color: {GREEN}; border-color: #1e3d2a; }}
 QPushButton#btnGreen:hover  {{ background: #162a1e; border-color: {GREEN}; }}
@@ -1257,8 +1317,8 @@ QPushButton#btnAmber  {{ color: {AMBER}; border-color: #3d2e1a; }}
 QPushButton#btnAmber:hover  {{ background: #2a2010; border-color: {AMBER}; }}
 QPushButton#btnBlue   {{ color: {BLUE};  border-color: #1e2a3d; }}
 QPushButton#btnBlue:hover   {{ background: #162030; border-color: {BLUE}; }}
-QPushButton#btnAccent {{ color: {ACCENT}; border-color: #2a2a4a; }}
-QPushButton#btnAccent:hover {{ background: #1e1e3a; border-color: {ACCENT}; }}
+QPushButton#btnAccent {{ color: {ACCENT}; border-color: {ACCENT_DIM}; }}
+QPushButton#btnAccent:hover {{ background: {ACCENT_BG}; border-color: {ACCENT}; }}
 
 QMenu {{
     background: {CARD};
@@ -1797,6 +1857,109 @@ class RTSSCapDialog(QDialog):
                                  "Enter a valid number (0 = unlimited).")
 
 
+# ── Customize Design dialog ─────────────────────────────────────────────────────
+class ThemeDialog(QDialog):
+    """Pick one of 8 presets, or Custom with a primary (accent) + secondary
+    (base tint) colour. The theme is saved and applied on the next launch."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Customize Design")
+        self.setModal(True)
+        self.setMinimumWidth(380)
+
+        t = load_theme()
+        self._preset = t["preset"]
+        self._accent = t["accent"]
+        self._base   = t["base"]
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 20)
+        lay.setSpacing(14)
+
+        title = QLabel("Customize Design")
+        title.setStyleSheet("font-size:13pt; font-weight:700;")
+        lay.addWidget(title)
+        sub = QLabel("Pick a theme preset, or Custom to choose your own primary "
+                     "and secondary colours. Changes apply after a quick restart.")
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        lay.addWidget(sub)
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        self._preset_btns = {}
+        for i, name in enumerate(list(THEME_PRESETS.keys()) + ["Custom"]):
+            b = QPushButton(name)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _, n=name: self._select(n))
+            self._preset_btns[name] = b
+            grid.addWidget(b, i // 3, i % 3)
+        lay.addLayout(grid)
+
+        self._custom_row = QWidget()
+        crl = QHBoxLayout(self._custom_row)
+        crl.setContentsMargins(0, 2, 0, 0)
+        crl.setSpacing(8)
+        self._primary_btn = QPushButton("Primary…")
+        self._primary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._primary_btn.clicked.connect(self._pick_primary)
+        self._secondary_btn = QPushButton("Secondary…")
+        self._secondary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._secondary_btn.clicked.connect(self._pick_secondary)
+        crl.addWidget(self._primary_btn)
+        crl.addWidget(self._secondary_btn)
+        lay.addWidget(self._custom_row)
+
+        act = QHBoxLayout()
+        act.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        save = QPushButton("Save & Restart")
+        save.setObjectName("btnGreen")
+        save.setCursor(Qt.CursorShape.PointingHandCursor)
+        save.clicked.connect(self.accept)
+        act.addWidget(cancel)
+        act.addWidget(save)
+        lay.addLayout(act)
+
+        self._refresh()
+
+    def _select(self, name):
+        self._preset = name
+        self._refresh()
+
+    def _pick_primary(self):
+        c = QColorDialog.getColor(QColor(self._accent), self, "Primary colour")
+        if c.isValid():
+            self._accent = c.name()
+            self._preset = "Custom"
+            self._refresh()
+
+    def _pick_secondary(self):
+        c = QColorDialog.getColor(QColor(self._base), self, "Secondary colour")
+        if c.isValid():
+            self._base = c.name()
+            self._preset = "Custom"
+            self._refresh()
+
+    def _refresh(self):
+        for name, b in self._preset_btns.items():
+            acc = self._accent if name == "Custom" else THEME_PRESETS[name]["accent"]
+            selected = (name == self._preset)
+            b.setStyleSheet(
+                f"color:{acc}; border:1px solid {ACCENT if selected else BORDER};"
+                + ("font-weight:700;" if selected else "")
+            )
+        self._custom_row.setVisible(self._preset == "Custom")
+        self._primary_btn.setStyleSheet(f"color:{self._accent}; border:1px solid {self._accent};")
+        self._secondary_btn.setStyleSheet(f"color:{self._base}; border:1px solid {self._base};")
+
+    def result_theme(self) -> dict:
+        return {"preset": self._preset, "accent": self._accent, "base": self._base}
+
+
 # ── Main window ─────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     _temps_signal = pyqtSignal(tuple, tuple, object, bool)
@@ -2022,6 +2185,8 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("Open Display Settings",
             lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
+        m.addSeparator()
+        m.addAction("Customize Design…", self._on_customize)
         m.addSeparator()
 
         self._autostart_action = m.addAction("Start with Windows")
@@ -2387,6 +2552,23 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Update",
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(zip_path)
+        self._quit()
+
+    def _on_customize(self):
+        dlg = ThemeDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            save_theme(dlg.result_theme())
+            self._restart()
+
+    def _restart(self):
+        """Relaunch the app so the new theme takes effect, then quit."""
+        try:
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable], creationflags=_DETACHED_PROCESS)
+            else:
+                subprocess.Popen([sys.executable, os.path.abspath(__file__)])
+        except Exception:
+            pass
         self._quit()
 
     def _on_save_debug(self):
