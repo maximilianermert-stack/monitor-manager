@@ -159,6 +159,46 @@ def get_ram_speed() -> int:
     return _ram_speed_cache
 
 
+_board_info_cache = None   # None = not queried yet; dict once resolved
+
+def get_board_info() -> dict:
+    """Motherboard model + BIOS version/date via WMI. Static — queried once
+    and cached. These need no kernel driver (unlike SuperIO temps/voltages)."""
+    global _board_info_cache
+    if _board_info_cache is not None:
+        return _board_info_cache
+    _board_info_cache = {}
+    try:
+        ps = (
+            "$b=Get-CimInstance Win32_BaseBoard;"
+            "$s=Get-CimInstance Win32_BIOS;"
+            "$d='';if($s.ReleaseDate){$d=$s.ReleaseDate.ToString('yyyy-MM-dd')};"
+            "\"$($b.Manufacturer)|$($b.Product)|$($s.SMBIOSBIOSVersion)|$d\""
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=12,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        parts = result.stdout.strip().split("|")
+        if len(parts) >= 4:
+            vendor = parts[0].strip()
+            for long, short in (("ASUSTeK COMPUTER INC.", "ASUS"),
+                                ("Micro-Star International Co., Ltd.", "MSI"),
+                                ("Gigabyte Technology Co., Ltd.", "Gigabyte")):
+                if vendor == long:
+                    vendor = short
+            _board_info_cache = {
+                "vendor":    vendor,
+                "product":   parts[1].strip(),
+                "bios":      parts[2].strip(),
+                "bios_date": parts[3].strip(),
+            }
+    except Exception:
+        pass
+    return _board_info_cache
+
+
 def get_xbox_battery():
     """Return battery level string for first connected wireless Xbox controller, or None."""
     BATTERY_DEVTYPE_GAMEPAD   = 0x00
@@ -1433,7 +1473,8 @@ class RingGauge(QWidget):
         f.setBold(True)
         p.setFont(f)
         num_rect = QRect(inner.left(), inner.top() + 8, inner.width(), 18)
-        p.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, f"{self._rpm:,}" if self._rpm else "—")
+        # 0 is a real reading (fan stopped / zero-RPM idle), not missing data.
+        p.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, f"{self._rpm:,}")
 
         p.setPen(QColor(SUBTEXT))
         f2 = QFont()
@@ -1612,7 +1653,8 @@ class TempWorker(QThread):
         ram         = get_ram_usage()
         battery     = get_xbox_battery()
         hdr         = get_hdr_state()
-        sensors["ram_speed"] = get_ram_speed()   # cached after first call
+        sensors["ram_speed"]  = get_ram_speed()   # cached after first call
+        sensors["board_info"] = get_board_info()  # cached after first call
         self.ready.emit(temps, ram, battery, hdr, fans, sensors)
 
 
@@ -1840,7 +1882,7 @@ class MainWindow(QMainWindow):
             ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
         )
         self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"])
-        self._sensor_mb  = SensorCard("MB", "Motherboard", ["Chipset", "VRM"])
+        self._sensor_mb  = SensorCard("MB", "Motherboard")
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
         sensors_layout.addStretch()
@@ -2111,10 +2153,29 @@ class MainWindow(QMainWindow):
         self._sensor_ram.set_value("Available", f"{ram_total - ram_used:.1f} GB")
         self._sensor_ram.set_value("Speed", f"{ram_speed} MT/s" if ram_speed else "—")
 
+        board      = sensors.get("board_info") or {}
         mb_chipset = sensors.get("mb_chipset_temp")
-        self._sensor_mb.set_summary(f"{mb_chipset:.0f}°C" if mb_chipset is not None else "—")
-        self._sensor_mb.set_value("Chipset", self._fmt(mb_chipset, "°C"))
-        self._sensor_mb.set_value("VRM", self._fmt(sensors.get("mb_vrm_temp"), "°C"))
+        mb_vrm     = sensors.get("mb_vrm_temp")
+        # Summary: live chipset temp if the board's SuperIO is readable,
+        # otherwise the board model (always available via WMI).
+        if mb_chipset is not None:
+            self._sensor_mb.set_summary(f"{mb_chipset:.0f}°C")
+        elif board.get("product"):
+            self._sensor_mb.set_summary(board["product"])
+        else:
+            self._sensor_mb.set_summary("—")
+        # Static board info (WMI, no driver needed)
+        if board.get("vendor"):
+            self._sensor_mb.set_value("Vendor", board["vendor"])
+        if board.get("bios"):
+            self._sensor_mb.set_value("BIOS", board["bios"])
+        if board.get("bios_date"):
+            self._sensor_mb.set_value("BIOS Date", board["bios_date"])
+        # Live SuperIO sensors — only shown when actually present
+        if mb_chipset is not None:
+            self._sensor_mb.set_value("Chipset", self._fmt(mb_chipset, "°C"))
+        if mb_vrm is not None:
+            self._sensor_mb.set_value("VRM", self._fmt(mb_vrm, "°C"))
         for rail, value in sensors.get("mb_voltages", {}).items():
             self._sensor_mb.set_value(rail, self._fmt(value, " V", 2))
 
