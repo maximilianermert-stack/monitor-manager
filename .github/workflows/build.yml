@@ -46,6 +46,9 @@ jobs:
       - name: Generate app icon
         run: python create_icon.py
 
+      - name: Write build info (commit sha for update checks)
+        run: Set-Content -Path build_info.txt -Value "${{ github.sha }}" -NoNewline -Encoding ascii
+
       - name: Build standalone EXE
         run: >
           pyinstaller
@@ -59,6 +62,7 @@ jobs:
           --collect-all PyQt6
           --add-data "tempreader_out;tempreader"
           --add-data "audioswitch_out;audioswitch"
+          --add-data "build_info.txt;."
           system_manager.py
 
       - name: Package onedir bundle as zip

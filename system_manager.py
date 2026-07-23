@@ -999,18 +999,46 @@ def _install_dir() -> str:
     return os.path.dirname(sys.executable)
 
 
-def download_update(progress_cb=None) -> tuple:
+def _current_build_sha() -> str:
+    """The commit this build was made from, written into build_info.txt by CI."""
+    try:
+        base = (sys._MEIPASS if getattr(sys, "frozen", False)
+                else os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(base, "build_info.txt"), encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _latest_release() -> dict:
+    req = urllib.request.Request(_GITHUB_RELEASE_URL, headers={"User-Agent": "SystemManager"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _release_sha(release: dict) -> str:
+    """Commit sha of a release — from the 'Commit: <sha>' line CI writes into the notes."""
+    import re
+    m = re.search(r"Commit:\s*([0-9a-fA-F]{7,40})", release.get("body", "") or "")
+    return m.group(1) if m else ""
+
+
+def is_up_to_date(release: dict) -> bool:
+    """True only when we can positively confirm the build matches the release."""
+    own = _current_build_sha()
+    latest = _release_sha(release)
+    return bool(own) and bool(latest) and own[:12] == latest[:12]
+
+
+def download_update(progress_cb=None, release=None) -> tuple:
     """Download the latest release .zip from GitHub. Returns (ok, zip_path_or_error).
     progress_cb(text) is called periodically with a percentage or MB counter.
+    Pass an already-fetched `release` dict to avoid a second API call.
     """
     if not getattr(sys, "frozen", False):
         return False, "Auto-update only works when running as .exe"
     try:
-        req = urllib.request.Request(
-            _GITHUB_RELEASE_URL, headers={"User-Agent": "SystemManager"}
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+        data = release if release is not None else _latest_release()
         assets = [a for a in data.get("assets", []) if a["name"].endswith(".zip")]
         if not assets:
             return False, "No .zip found in latest release."
@@ -2529,7 +2557,7 @@ class MainWindow(QMainWindow):
                 err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
-        self.setWindowTitle("System Manager  —  Downloading update…")
+        self.setWindowTitle("System Manager  —  Checking for updates…")
         threading.Thread(target=self._do_update, daemon=True).start()
 
     def _do_update(self):
@@ -2537,7 +2565,25 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.setWindowTitle(
                 f"System Manager  —  Downloading update… {text}"
             ))
-        ok, result = download_update(progress_cb=on_progress)
+        # 1. Look at the latest release and skip the download if we already run it.
+        try:
+            release = _latest_release()
+        except Exception as e:
+            QTimer.singleShot(0, lambda: (
+                self.setWindowTitle("System Manager"),
+                QMessageBox.critical(self, "Update Failed",
+                                     f"Couldn't check for updates:\n{e}"),
+            ))
+            return
+        if is_up_to_date(release):
+            QTimer.singleShot(0, lambda: (
+                self.setWindowTitle("System Manager"),
+                QMessageBox.information(self, "Up to date",
+                                        "You're already running the latest version."),
+            ))
+            return
+        # 2. A newer build exists — download and apply it.
+        ok, result = download_update(progress_cb=on_progress, release=release)
         if ok:
             QTimer.singleShot(0, lambda: self._finish_update(result))
         else:
