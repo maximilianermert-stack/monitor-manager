@@ -1042,7 +1042,11 @@ def download_update(progress_cb=None, release=None) -> tuple:
         assets = [a for a in data.get("assets", []) if a["name"].endswith(".zip")]
         if not assets:
             return False, "No .zip found in latest release."
-        download_url = assets[0]["browser_download_url"]
+        # Prefer the API asset URL with an octet-stream Accept header — the
+        # canonical download path, which GitHub's CDN throttles far less than
+        # a bare browser_download_url request.
+        asset = assets[0]
+        download_url = asset.get("url") or asset["browser_download_url"]
         # Stage the download inside the install dir so it is covered by any
         # antivirus folder exclusion the user set for the app.
         staging = os.path.join(_install_dir(), "_update")
@@ -1050,9 +1054,16 @@ def download_update(progress_cb=None, release=None) -> tuple:
         os.makedirs(staging, exist_ok=True)
         zip_path = os.path.join(staging, "SystemManager.zip")
         dl_req = urllib.request.Request(
-            download_url, headers={"User-Agent": "SystemManager-Updater/1.0"}
+            download_url,
+            headers={"User-Agent": "SystemManager-Updater/1.0",
+                     "Accept": "application/octet-stream"},
         )
-        with urllib.request.urlopen(dl_req, timeout=180) as dl:
+        # Bound the whole download so it can never hang indefinitely: fail if a
+        # single read blocks past the socket timeout, if no new bytes arrive for
+        # STALL_S, or if the total exceeds DEADLINE_S.
+        STALL_S, DEADLINE_S = 45, 600
+        start = time.time()
+        with urllib.request.urlopen(dl_req, timeout=STALL_S) as dl:
             total = int(dl.headers.get("Content-Length") or 0)
             downloaded = 0
             with open(zip_path, "wb") as f:
@@ -1062,14 +1073,21 @@ def download_update(progress_cb=None, release=None) -> tuple:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
+                    if time.time() - start > DEADLINE_S:
+                        raise TimeoutError("download timed out")
                     if progress_cb:
                         if total:
                             progress_cb(f"{min(99, downloaded * 100 // total)}%")
                         else:
                             progress_cb(f"{downloaded / (1024 * 1024):.1f} MB")
+        if total and downloaded < total:
+            raise IOError("download incomplete")
         return True, zip_path
     except Exception as e:
-        return False, str(e)
+        msg = str(e) or e.__class__.__name__
+        return (False,
+                f"Download failed ({msg}). GitHub may be throttling — try again "
+                f"later, or download the latest zip manually from the Releases page.")
 
 
 def _find_bundle_root(extracted: str) -> str:
