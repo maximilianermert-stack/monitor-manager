@@ -1084,34 +1084,96 @@ def apply_update(zip_path: str):
         pass
 
 
-def finalize_update(target_dir: str):
-    """Run from the staged build: copy our files over the old install dir once
-    it's unlocked, then relaunch the app from its canonical location."""
-    staged_root = _install_dir()   # we're the staged exe, so this is the staging bundle
+_UPDATE_KEEP = ("_update", "_backup")   # folders never touched during a swap
+
+
+def _is_locked(path: str) -> bool:
+    """True if `path` is still held by the old process. A running .exe on
+    Windows can be renamed but NOT opened for writing, so probe with an
+    append-mode open (which writes nothing, leaving the file unchanged)."""
+    if not os.path.exists(path):
+        return False
     try:
-        # Wait for the previous process to exit and release its file locks,
-        # retrying the copy rather than guessing a fixed delay.
-        last_err = None
-        for _ in range(60):        # up to ~30s
-            try:
-                for root, _dirs, files in os.walk(staged_root):
-                    rel = os.path.relpath(root, staged_root)
-                    dest_root = os.path.join(target_dir, rel) if rel != "." else target_dir
-                    os.makedirs(dest_root, exist_ok=True)
-                    for fn in files:
-                        shutil.copy2(os.path.join(root, fn), os.path.join(dest_root, fn))
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                time.sleep(0.5)
-        if last_err is None:
-            subprocess.Popen(
-                [os.path.join(target_dir, "SystemManager.exe")],
-                creationflags=_DETACHED_PROCESS,
-            )
+        with open(path, "a+b"):
+            pass
+        return False
     except Exception:
-        pass
+        return True
+
+
+def _relaunch(target_dir: str):
+    exe = os.path.join(target_dir, "SystemManager.exe")
+    if os.path.exists(exe):
+        subprocess.Popen([exe], creationflags=_DETACHED_PROCESS)
+
+
+def _copy_into(src_root: str, dest_dir: str):
+    for root, _dirs, files in os.walk(src_root):
+        rel = os.path.relpath(root, src_root)
+        dest_root = os.path.join(dest_dir, rel) if rel != "." else dest_dir
+        os.makedirs(dest_root, exist_ok=True)
+        for fn in files:
+            shutil.copy2(os.path.join(root, fn), os.path.join(dest_root, fn))
+
+
+def finalize_update(target_dir: str):
+    """Run from the staged build. Swap the install with a backup/rollback net:
+    move the old install aside, copy the new one in, verify it, and on ANY
+    failure restore the backup — so a broken update can never leave the app in
+    a half-updated (unusable) state. Then relaunch from the canonical path."""
+    staged_root = _install_dir()               # we ARE the staged build
+    backup = os.path.join(target_dir, "_backup")
+    old_exe = os.path.join(target_dir, "SystemManager.exe")
+
+    # 1. Wait for the previous process to fully exit (release its file locks).
+    for _ in range(120):                       # up to ~60s
+        if not _is_locked(old_exe):
+            break
+        time.sleep(0.5)
+    if _is_locked(old_exe):                    # never released — don't risk a swap
+        _relaunch(target_dir)
+        return
+
+    try:
+        # 2. Move the current install aside into _backup (fast same-volume rename).
+        shutil.rmtree(backup, ignore_errors=True)
+        os.makedirs(backup, exist_ok=True)
+        for name in os.listdir(target_dir):
+            if name in _UPDATE_KEEP:
+                continue
+            shutil.move(os.path.join(target_dir, name), os.path.join(backup, name))
+
+        # 3. Copy the new build in, then verify the essentials exist.
+        _copy_into(staged_root, target_dir)
+        if not (os.path.exists(old_exe) and os.path.isdir(os.path.join(target_dir, "_internal"))):
+            raise RuntimeError("update verification failed")
+
+        # 4. Success — drop the backup and launch the new build.
+        shutil.rmtree(backup, ignore_errors=True)
+        _relaunch(target_dir)
+    except Exception:
+        # 5. Rollback — clear whatever partially landed, restore the backup.
+        #    Each step is guarded individually so one stuck file can't abort
+        #    the whole restore and strand the user.
+        for name in list(os.listdir(target_dir)):
+            if name in _UPDATE_KEEP:
+                continue
+            p = os.path.join(target_dir, name)
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.remove(p)
+            except Exception:
+                pass
+        if os.path.isdir(backup):
+            for name in list(os.listdir(backup)):
+                try:
+                    shutil.move(os.path.join(backup, name), os.path.join(target_dir, name))
+                except Exception:
+                    pass
+            shutil.rmtree(backup, ignore_errors=True)
+        _relaunch(target_dir)
 
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
@@ -1758,11 +1820,13 @@ class MainWindow(QMainWindow):
         self.refresh_monitors()
         self._worker.start()
 
-        # Clean up the staging folder left behind by a completed update
+        # Clean up the staging/backup folders left behind by a completed update
         if getattr(sys, "frozen", False):
-            staging = os.path.join(os.path.dirname(sys.executable), "_update")
-            if os.path.isdir(staging):
-                shutil.rmtree(staging, ignore_errors=True)
+            base = os.path.dirname(sys.executable)
+            for leftover in ("_update", "_backup"):
+                p = os.path.join(base, leftover)
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
 
         self._temp_timer = QTimer(self)
         self._temp_timer.timeout.connect(self._kick_worker)
