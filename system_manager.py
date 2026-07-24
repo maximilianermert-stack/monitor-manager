@@ -265,8 +265,10 @@ def get_temperatures():
         gpu_mem_total = data.get("gpu_mem_total")
         # TempReader already filters motherboard headers to connected ones
         # (>0) but includes discrete GPU fans even at 0 RPM (zero-fan idle),
-        # so don't drop 0-RPM entries here.
-        fans          = [{"name": f["name"], "rpm": int(f["rpm"])}
+        # so don't drop 0-RPM entries here. "pct" is the header's PWM duty
+        # cycle (from the paired Control sensor) or None if not exposed.
+        fans          = [{"name": f["name"], "rpm": int(f["rpm"]),
+                          "pct": (round(float(f["pct"])) if f.get("pct") is not None else None)}
                          for f in data.get("fans", [])]
         # DEBUG: write hardware list next to the exe (a known, findable spot —
         # an elevated process's %TEMP% resolves to an unpredictable location).
@@ -1657,18 +1659,20 @@ class FlowLayout(QLayout):
 
 # ── Fan RPM ring gauge ────────────────────────────────────────────────────────
 class RingGauge(QWidget):
-    """Circular fill gauge: arc length = rpm / ref_max, with the value drawn
-    in the center. Reference scale is decorative (LHM doesn't report a fan's
-    true max RPM), not a measured bound."""
+    """Circular fill gauge with the RPM in the centre. The arc length is the
+    header's real PWM duty cycle (%) when known; otherwise it falls back to a
+    decorative rpm/ref_max scale (LHM doesn't report a fan's true max RPM)."""
 
     def __init__(self, ref_max: int = 2000, parent=None):
         super().__init__(parent)
         self._rpm = 0
+        self._pct = None      # real PWM % from the paired control sensor, or None
         self._ref_max = ref_max
         self.setFixedSize(74, 74)
 
-    def set_rpm(self, rpm: int):
+    def set_values(self, rpm: int, pct=None):
         self._rpm = rpm
+        self._pct = pct
         self.update()
 
     def paintEvent(self, event):
@@ -1679,7 +1683,10 @@ class RingGauge(QWidget):
         rect = self.rect().adjusted(
             pen_w // 2 + 1, pen_w // 2 + 1, -(pen_w // 2 + 1), -(pen_w // 2 + 1)
         )
-        pct = max(0.0, min(100.0, self._rpm / self._ref_max * 100)) if self._ref_max else 0.0
+        if self._pct is not None:
+            pct = max(0.0, min(100.0, float(self._pct)))
+        else:
+            pct = max(0.0, min(100.0, self._rpm / self._ref_max * 100)) if self._ref_max else 0.0
 
         pen = QPen(QColor(BORDER))
         pen.setWidth(pen_w)
@@ -1720,7 +1727,7 @@ class RingGauge(QWidget):
 class FanTile(QFrame):
     renamed = pyqtSignal(str, str)   # sensor_name, new_display_name
 
-    def __init__(self, sensor_name: str, rpm: int, display_name: str, parent=None):
+    def __init__(self, sensor_name: str, rpm: int, display_name: str, pct=None, parent=None):
         super().__init__(parent)
         self._sensor_name = sensor_name
         self.setObjectName("fanTile")
@@ -1735,12 +1742,12 @@ class FanTile(QFrame):
         self.setGraphicsEffect(shadow)
 
         col = QVBoxLayout(self)
-        col.setContentsMargins(10, 16, 10, 12)
-        col.setSpacing(8)
+        col.setContentsMargins(10, 14, 10, 10)
+        col.setSpacing(6)
         col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         self._ring = RingGauge(parent=self)
-        self._ring.set_rpm(rpm)
+        self._ring.set_values(rpm, pct)
         col.addWidget(self._ring, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self._name_lbl = QLabel(display_name)
@@ -1748,8 +1755,18 @@ class FanTile(QFrame):
         self._name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self._name_lbl)
 
-    def update_rpm(self, rpm: int):
-        self._ring.set_rpm(rpm)
+        self._pct_lbl = QLabel()
+        self._pct_lbl.setStyleSheet(f"color:{ACCENT}; font-size:8pt; font-weight:600;")
+        self._pct_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        col.addWidget(self._pct_lbl)
+        self._set_pct_label(pct)
+
+    def _set_pct_label(self, pct):
+        self._pct_lbl.setText(f"{pct}%" if pct is not None else "")
+
+    def update_values(self, rpm: int, pct=None):
+        self._ring.set_values(rpm, pct)
+        self._set_pct_label(pct)
 
     def mouseDoubleClickEvent(self, event):
         name, ok = QInputDialog.getText(
@@ -2415,13 +2432,13 @@ class MainWindow(QMainWindow):
             for f in fans:
                 sname = f["name"]
                 display = self._fan_names.get(sname, sname)
-                tile = FanTile(sname, f["rpm"], display, self._fans_grid_host)
+                tile = FanTile(sname, f["rpm"], display, f.get("pct"), self._fans_grid_host)
                 tile.renamed.connect(self._on_fan_renamed)
                 self._fans_layout.addWidget(tile)
                 self._fan_rows[sname] = tile
         else:
             for f in fans:
-                self._fan_rows[f["name"]].update_rpm(f["rpm"])
+                self._fan_rows[f["name"]].update_values(f["rpm"], f.get("pct"))
 
     def _on_fan_renamed(self, sensor_name: str, new_name: str):
         self._fan_names[sensor_name] = new_name

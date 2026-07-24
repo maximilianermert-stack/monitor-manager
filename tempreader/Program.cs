@@ -145,8 +145,8 @@ foreach (var hw in computer.Hardware)
             else if (sensor.SensorType == SensorType.Fan)
                 // Discrete GPU fans (e.g. "GPU Fan 1"). Included even at 0 RPM
                 // (zero-fan idle mode) so the Fans tab isn't empty on boards
-                // whose motherboard SuperIO LHM can't read.
-                fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
+                // whose motherboard SuperIO LHM can't read. No paired PWM % here.
+                fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value, pct = (float?)null });
             else if (sensor.SensorType == SensorType.Load)
             {
                 if (gpuLoad == null && sensor.Name.Contains("Core"))
@@ -192,12 +192,23 @@ foreach (var hw in computer.Hardware)
         foreach (var sub in hw.SubHardware)
         {
             sub.Update();
+            // Pair each fan (RPM) with its PWM control (%) by sensor index — the
+            // SuperIO exposes Fan #N and Control #N on the same header. This is
+            // the actual duty-cycle FanControl shows; read-only, we set nothing.
+            var controlPct = new System.Collections.Generic.Dictionary<int, float>();
+            foreach (var s in sub.Sensors)
+                if (s.SensorType == SensorType.Control && s.Value != null)
+                    controlPct[s.Index] = s.Value.Value;
+
             foreach (var sensor in sub.Sensors)
             {
                 if (sensor.Value == null) continue;
 
                 if (sensor.SensorType == SensorType.Fan && sensor.Value > 0)
-                    fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value });
+                {
+                    float? pct = controlPct.TryGetValue(sensor.Index, out var c) ? c : (float?)null;
+                    fans.Add(new { name = sensor.Name, rpm = (int)sensor.Value, pct = pct });
+                }
                 else if (sensor.SensorType == SensorType.Temperature)
                 {
                     if (sensor.Name.Contains("Chipset") && mbChipsetTemp == null)
