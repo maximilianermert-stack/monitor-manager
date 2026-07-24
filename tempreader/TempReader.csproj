@@ -13,7 +13,12 @@
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.4" />
+    <!-- 0.9.5-pre453: the last WinRing0-based build before LHM switched to
+         PawnIO at pre454. Adds newer motherboard SuperIO support (e.g. ASUS
+         B850) that 0.9.4 lacks, while keeping the embedded WinRing0 driver so
+         no separate PawnIO install is needed. Same net472 lib/ layout as 0.9.4
+         (no RuntimeIdentifier needed). This is what FanControl v237 uses. -->
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.5-pre453" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 </Project>
