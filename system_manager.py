@@ -19,11 +19,11 @@ import zipfile
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
-    QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
+    QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QLayout,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
     QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen,
 )
@@ -1593,6 +1593,68 @@ class DisabledCard(QFrame):
         row.addWidget(body)
 
 
+# ── Flow layout (wraps items left-to-right, like FanControl's tiles) ───────────
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, spacing=12):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._items = []
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x, y, line_h = rect.x(), rect.y(), 0
+        sp = self.spacing()
+        for item in self._items:
+            w = item.sizeHint().width()
+            h = item.sizeHint().height()
+            if x + w > rect.right() and line_h > 0:
+                x = rect.x()
+                y += line_h + sp
+                line_h = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+            x += w + sp
+            line_h = max(line_h, h)
+        return y + line_h - rect.y()
+
+
 # ── Fan RPM ring gauge ────────────────────────────────────────────────────────
 class RingGauge(QWidget):
     """Circular fill gauge: arc length = rpm / ref_max, with the value drawn
@@ -2117,24 +2179,15 @@ class MainWindow(QMainWindow):
         mon_scroll.setWidget(self._scroll_content)
         self._tabs.addTab(mon_scroll, "Monitors")
 
-        # Fans tab — 2-column grid of ring-gauge tiles
+        # Fans tab — ring-gauge tiles in a wrapping flow layout
         fan_scroll = QScrollArea()
         fan_scroll.setWidgetResizable(True)
         fan_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         fan_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._fans_content = QWidget()
         self._fans_content.setObjectName("scrollContent")
-        fans_outer = QVBoxLayout(self._fans_content)
-        fans_outer.setContentsMargins(16, 12, 16, 12)
-        fans_outer.setSpacing(0)
-
-        self._fans_grid_host = QWidget()
-        self._fans_layout = QGridLayout(self._fans_grid_host)
-        self._fans_layout.setContentsMargins(0, 0, 0, 0)
-        self._fans_layout.setSpacing(10)
-        fans_outer.addWidget(self._fans_grid_host, alignment=Qt.AlignmentFlag.AlignTop)
-        fans_outer.addStretch()
-
+        self._fans_layout = FlowLayout(self._fans_content, margin=16, spacing=12)
+        self._fans_grid_host = self._fans_content   # tiles parent to the scroll content
         fan_scroll.setWidget(self._fans_content)
         self._tabs.addTab(fan_scroll, "Fans")
 
@@ -2359,13 +2412,12 @@ class MainWindow(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
             self._fan_rows.clear()
-            for idx, f in enumerate(fans):
+            for f in fans:
                 sname = f["name"]
                 display = self._fan_names.get(sname, sname)
                 tile = FanTile(sname, f["rpm"], display, self._fans_grid_host)
                 tile.renamed.connect(self._on_fan_renamed)
-                row, col = divmod(idx, 2)
-                self._fans_layout.addWidget(tile, row, col)
+                self._fans_layout.addWidget(tile)
                 self._fan_rows[sname] = tile
         else:
             for f in fans:
