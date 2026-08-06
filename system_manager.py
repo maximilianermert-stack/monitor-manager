@@ -1448,25 +1448,42 @@ def _make_tray_icon() -> QIcon:
 
 # ── Stats chip widget ───────────────────────────────────────────────────────────
 class StatsChip(QFrame):
+    """Overview metric card: small label, a large tinted primary value (with a
+    muted unit), and a secondary detail line."""
+
     def __init__(self, label: str, value_color: str, parent=None):
         super().__init__(parent)
         self.setObjectName("statsChip")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(3)
+        lay.setContentsMargins(15, 13, 15, 14)
+        lay.setSpacing(2)
 
-        name_lbl = QLabel(label)
-        name_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 8pt;")
+        name_lbl = QLabel(label.upper())
+        name_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 8pt; font-weight: 600;")
 
         self._val = QLabel("—")
+        self._val.setTextFormat(Qt.TextFormat.RichText)
         self._val.setStyleSheet(
-            f"color: {value_color}; font-size: 11pt; font-weight: 700;"
+            f"color: {value_color}; font-size: 21pt; font-weight: 700;"
         )
+
+        self._sub = QLabel("")
+        self._sub.setStyleSheet(f"color: {SUBTEXT}; font-size: 8.5pt;")
+
         lay.addWidget(name_lbl)
         lay.addWidget(self._val)
+        lay.addWidget(self._sub)
 
-    def set_value(self, text: str):
-        self._val.setText(text)
+    @staticmethod
+    def fmt(value, unit: str) -> str:
+        """Big number with a smaller muted unit, as rich text."""
+        if value is None:
+            return "N/A"
+        return f'{value}<span style="font-size:11pt; color:{SUBTEXT};"> {unit}</span>'
+
+    def set_value(self, main: str, sub: str = ""):
+        self._val.setText(main)
+        self._sub.setText(sub)
 
 
 # ── Monitor card widgets ────────────────────────────────────────────────────────
@@ -2096,7 +2113,8 @@ class MainWindow(QMainWindow):
         self.resize(760, 520)
 
         self._fan_names = load_fan_names()
-        self._fan_rows: dict  = {}
+        self._fan_rows: dict     = {}
+        self._cooling_chips: dict = {}
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -2160,55 +2178,60 @@ class MainWindow(QMainWindow):
         sep1.setStyleSheet(f"background:{BORDER}; border:none; max-height:1px;")
         root.addWidget(sep1)
 
-        # ── Stats chips ───────────────────────────────────────────────────
-        stats_w = QWidget()
-        stats_w.setStyleSheet(f"background:{BG};")
-        sl = QHBoxLayout(stats_w)
-        sl.setContentsMargins(16, 10, 16, 10)
-        sl.setSpacing(8)
-
+        # ── Metric cards (shown on the Overview tab, not an always-on strip) ─
         self._chip_cpu  = StatsChip("CPU",        PEACH)
         self._chip_gpu  = StatsChip("GPU",        BLUE)
         self._chip_sys  = StatsChip("System",     AMBER)
         self._chip_ctrl = StatsChip("Controller", TEXT)
 
-        for chip in (self._chip_cpu, self._chip_gpu, self._chip_sys, self._chip_ctrl):
-            chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            sl.addWidget(chip)
-
-        root.addWidget(stats_w)
-
-        # ── Tabs (Monitors / Fans / Sensors) ────────────────────────────────
+        # ── Tabs (Übersicht / System / Fans / Monitors) ─────────────────────
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
-        # Monitors tab
-        mon_scroll = QScrollArea()
-        mon_scroll.setWidgetResizable(True)
-        mon_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        mon_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll_content = QWidget()
-        self._scroll_content.setObjectName("scrollContent")
-        self._monitor_layout = QVBoxLayout(self._scroll_content)
-        self._monitor_layout.setContentsMargins(16, 12, 16, 12)
-        self._monitor_layout.setSpacing(10)
-        self._monitor_layout.addStretch()
-        mon_scroll.setWidget(self._scroll_content)
-        self._tabs.addTab(mon_scroll, "Monitors")
+        def _section_title(text):
+            l = QLabel(text.upper())
+            l.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt; font-weight:600;")
+            return l
 
-        # Fans tab — ring-gauge tiles in a wrapping flow layout
-        fan_scroll = QScrollArea()
-        fan_scroll.setWidgetResizable(True)
-        fan_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        fan_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._fans_content = QWidget()
-        self._fans_content.setObjectName("scrollContent")
-        self._fans_layout = FlowLayout(self._fans_content, margin=16, spacing=12)
-        self._fans_grid_host = self._fans_content   # tiles parent to the scroll content
-        fan_scroll.setWidget(self._fans_content)
-        self._tabs.addTab(fan_scroll, "Fans")
+        # Overview / Übersicht — landing page: metric cards + summaries
+        ov_scroll = QScrollArea()
+        ov_scroll.setWidgetResizable(True)
+        ov_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        ov_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        ov_content = QWidget()
+        ov_content.setObjectName("scrollContent")
+        ov_lay = QVBoxLayout(ov_content)
+        ov_lay.setContentsMargins(16, 14, 16, 14)
+        ov_lay.setSpacing(12)
 
-        # Sensors tab — expandable per-component readouts (HWiNFO-style)
+        metrics = QHBoxLayout()
+        metrics.setSpacing(10)
+        for chip in (self._chip_cpu, self._chip_gpu, self._chip_sys, self._chip_ctrl):
+            chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            metrics.addWidget(chip)
+        ov_lay.addLayout(metrics)
+
+        ov_lay.addWidget(_section_title("Cooling"))
+        cool_card = QFrame()
+        cool_card.setObjectName("monitorCard")
+        self._cooling_layout = FlowLayout(cool_card, margin=12, spacing=8)
+        ov_lay.addWidget(cool_card)
+
+        ov_lay.addWidget(_section_title("Displays"))
+        disp_card = QFrame()
+        disp_card.setObjectName("monitorCard")
+        dcl = QVBoxLayout(disp_card)
+        dcl.setContentsMargins(14, 12, 14, 12)
+        self._displays_lbl = QLabel("—")
+        self._displays_lbl.setStyleSheet(f"color:{TEXT}; font-size:9.5pt;")
+        self._displays_lbl.setWordWrap(True)
+        dcl.addWidget(self._displays_lbl)
+        ov_lay.addWidget(disp_card)
+
+        ov_lay.addStretch()
+        ov_scroll.setWidget(ov_content)
+
+        # System (sensors) tab — expandable per-component readouts
         sensors_scroll = QScrollArea()
         sensors_scroll.setWidgetResizable(True)
         sensors_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2229,9 +2252,36 @@ class MainWindow(QMainWindow):
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
         sensors_layout.addStretch()
-
         sensors_scroll.setWidget(sensors_content)
-        self._tabs.addTab(sensors_scroll, "Sensors")
+
+        # Fans tab — ring-gauge tiles in a wrapping flow layout
+        fan_scroll = QScrollArea()
+        fan_scroll.setWidgetResizable(True)
+        fan_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        fan_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._fans_content = QWidget()
+        self._fans_content.setObjectName("scrollContent")
+        self._fans_layout = FlowLayout(self._fans_content, margin=16, spacing=12)
+        self._fans_grid_host = self._fans_content
+        fan_scroll.setWidget(self._fans_content)
+
+        # Monitors tab
+        mon_scroll = QScrollArea()
+        mon_scroll.setWidgetResizable(True)
+        mon_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mon_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_content = QWidget()
+        self._scroll_content.setObjectName("scrollContent")
+        self._monitor_layout = QVBoxLayout(self._scroll_content)
+        self._monitor_layout.setContentsMargins(16, 12, 16, 12)
+        self._monitor_layout.setSpacing(10)
+        self._monitor_layout.addStretch()
+        mon_scroll.setWidget(self._scroll_content)
+
+        self._tabs.addTab(ov_scroll,      "Übersicht")
+        self._tabs.addTab(sensors_scroll, "System")
+        self._tabs.addTab(fan_scroll,     "Fans")
+        self._tabs.addTab(mon_scroll,     "Monitors")
 
         root.addWidget(self._tabs, 1)
 
@@ -2397,26 +2447,32 @@ class MainWindow(QMainWindow):
          gpu_mem_used, gpu_mem_total) = temps
         ram_used, ram_total = ram
 
-        cpu_text = f"{cpu_temp:.0f} °C" if cpu_temp is not None else "N/A"
-        if cpu_load is not None:
-            cpu_text += f"  ·  {cpu_load:.0f}%"
-        self._chip_cpu.set_value(cpu_text)
+        self._chip_cpu.set_value(
+            StatsChip.fmt(f"{cpu_temp:.0f}" if cpu_temp is not None else None, "°C"),
+            f"{cpu_load:.0f}% Last" if cpu_load is not None else "",
+        )
 
-        gpu_text = f"{gpu_temp:.0f} °C" if gpu_temp is not None else "N/A"
+        gpu_sub = []
         if gpu_load is not None:
-            gpu_text += f"  ·  {gpu_load:.0f}%"
+            gpu_sub.append(f"{gpu_load:.0f}%")
         if gpu_mem_used is not None and gpu_mem_total is not None:
-            gpu_text += f"  ·  {gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB"
-        self._chip_gpu.set_value(gpu_text)
+            gpu_sub.append(f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB")
+        self._chip_gpu.set_value(
+            StatsChip.fmt(f"{gpu_temp:.0f}" if gpu_temp is not None else None, "°C"),
+            "  ·  ".join(gpu_sub),
+        )
 
         pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
-        pwr_text  = f"{sum(pwr_parts):.0f} W" if pwr_parts else "N/A"
-        pwr_text += f"  ·  {ram_used:.1f}/{ram_total} GB"
-        self._chip_sys.set_value(pwr_text)
+        self._chip_sys.set_value(
+            StatsChip.fmt(f"{sum(pwr_parts):.0f}" if pwr_parts else None, "W"),
+            f"{ram_used:.1f}/{ram_total} GB RAM",
+        )
 
-        self._chip_ctrl.set_value(battery if battery else "—")
+        self._chip_ctrl.set_value(battery if battery else "—",
+                                  "Xbox Wireless" if battery else "")
         self._apply_hdr_color(hdr)
         self._update_fans(fans)
+        self._update_cooling(fans)
         self._update_sensors(temps, ram, sensors)
 
     def _update_fans(self, fans: list):
@@ -2443,6 +2499,40 @@ class MainWindow(QMainWindow):
     def _on_fan_renamed(self, sensor_name: str, new_name: str):
         self._fan_names[sensor_name] = new_name
         save_fan_names(self._fan_names)
+
+    def _make_cooling_chip(self, name: str, pct):
+        chip = QFrame()
+        chip.setObjectName("sensorCell")
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(11, 6, 11, 6)
+        row.setSpacing(8)
+        nl = QLabel(name)
+        nl.setStyleSheet("font-weight:600; font-size:9pt;")
+        pl = QLabel(f"{pct}%")
+        pl.setStyleSheet(f"color:{ACCENT}; font-weight:600; font-size:8.5pt;")
+        row.addWidget(nl)
+        row.addWidget(pl)
+        return chip, pl
+
+    def _update_cooling(self, fans: list):
+        """Overview 'Cooling' strip: one small chip per controllable board fan
+        (those reporting a PWM %). GPU zero-fans are left out to reduce clutter."""
+        shown = [f for f in fans if f.get("pct") is not None]
+        incoming = {f["name"] for f in shown}
+        if set(self._cooling_chips.keys()) != incoming:
+            while self._cooling_layout.count():
+                item = self._cooling_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._cooling_chips.clear()
+            for f in shown:
+                display = self._fan_names.get(f["name"], f["name"])
+                chip, pct_lbl = self._make_cooling_chip(display, f["pct"])
+                self._cooling_layout.addWidget(chip)
+                self._cooling_chips[f["name"]] = pct_lbl
+        else:
+            for f in shown:
+                self._cooling_chips[f["name"]].setText(f"{f['pct']}%")
 
     def _update_sensors(self, temps: tuple, ram: tuple, sensors: dict):
         (cpu_temp, cpu_load, _cpu_power,
@@ -2554,7 +2644,16 @@ class MainWindow(QMainWindow):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(f"color:{SUBTEXT}; padding:32px;")
             self._monitor_layout.insertWidget(0, lbl)
+            self._displays_lbl.setText("keine Anzeige erkannt")
             return
+
+        # Overview 'Displays' summary
+        res_parts = [f"{m['width']}×{m['height']}" + ("  (Primär)" if m["primary"] else "")
+                     for m in active]
+        summary = f"{len(active)} aktiv"
+        if res_parts:
+            summary += "  ·  " + "   +   ".join(res_parts)
+        self._displays_lbl.setText(summary)
 
         idx = 0
         for mon in active:
