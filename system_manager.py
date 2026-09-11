@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QLayout,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
-    QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog,
+    QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize
 from PyQt6.QtGui import (
@@ -312,6 +312,13 @@ def get_temperatures():
             "mb_voltages": {
                 k: _round(v, 2) for k, v in data.get("mb_voltages", {}).items()
             },
+            # MSI Afterburner (BlackwellHotspot.dll) — real hotspot + module temps
+            "ab_available": bool(data.get("ab_available")),
+            "ab_hotspot":   _round(data.get("ab_hotspot")),
+            "ab_temps": [
+                {"name": t.get("name"), "value": _round(t.get("value"))}
+                for t in data.get("ab_temps", []) if t.get("name")
+            ],
         }
         return temps, fans, sensors
     except Exception:
@@ -668,6 +675,28 @@ def save_fan_names(names: dict):
     os.makedirs(_FAN_NAMES_DIR, exist_ok=True)
     with open(_FAN_NAMES_FILE, "w", encoding="utf-8") as f:
         json.dump(names, f, indent=2)
+
+
+# ── General app settings ──────────────────────────────────────────────────────
+_SETTINGS_FILE = os.path.join(_FAN_NAMES_DIR, "settings.json")
+
+def load_settings() -> dict:
+    try:
+        with open(_SETTINGS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_settings(d: dict):
+    os.makedirs(_FAN_NAMES_DIR, exist_ok=True)
+    with open(_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+
+
+def afterburner_plugin_dir() -> str:
+    """Default MSI Afterburner monitoring-plugin folder."""
+    pf = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    return os.path.join(pf, "MSI Afterburner", "Plugins", "Monitoring")
 
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
 def _find_rtss_path() -> str:
@@ -2102,6 +2131,144 @@ class ThemeDialog(QDialog):
         return {"preset": self._preset, "accent": self._accent, "base": self._base}
 
 
+# ── GPU Hotspot via MSI Afterburner ─────────────────────────────────────────────
+class AfterburnerDialog(QDialog):
+    """Connect the real RTX 50 hotspot from MSI Afterburner + the community
+    BlackwellHotspot.dll plugin. We only READ Afterburner's shared memory — the
+    plugin (which does the low-level register access) must be installed by the
+    user, so this dialog guides that one-time setup and toggles the readout."""
+
+    _GUIDE_URL = "https://www.google.com/search?q=BlackwellHotspot.dll+overclock.net"
+
+    def __init__(self, parent, available: bool, hotspot):
+        super().__init__(parent)
+        self._parent = parent
+        self.setWindowTitle("GPU Hotspot (Afterburner)")
+        self.setModal(True)
+        self.setMinimumWidth(460)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 20)
+        lay.setSpacing(12)
+
+        title = QLabel("GPU Hotspot über MSI Afterburner")
+        title.setStyleSheet("font-size:13pt; font-weight:700;")
+        lay.addWidget(title)
+        sub = QLabel(
+            "Der echte RTX-50-Hotspot (+ GDDR7-Module) ist nur über MSI Afterburner "
+            "mit dem BlackwellHotspot.dll-Plugin lesbar. Läuft beides, liest System "
+            "Manager die Werte automatisch mit — ohne eigenen Treiber."
+        )
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        lay.addWidget(sub)
+
+        if available:
+            txt = "✔  Afterburner erkannt"
+            if hotspot is not None:
+                txt += f"   ·   Hotspot: {hotspot:.0f} °C"
+            color = GREEN
+        else:
+            txt = "✖  Afterburner nicht erkannt — läuft es, und ist das Plugin aktiviert?"
+            color = RED
+        status = QLabel(txt)
+        status.setStyleSheet(f"color:{color}; font-size:9.5pt; font-weight:600;")
+        lay.addWidget(status)
+
+        self._chk = QCheckBox("Hotspot aus Afterburner anzeigen")
+        self._chk.setChecked(bool(parent._af_enabled))
+        self._chk.toggled.connect(self._on_toggle)
+        lay.addWidget(self._chk)
+
+        # one-time setup helpers
+        setup = QHBoxLayout()
+        setup.setSpacing(8)
+        b_folder = QPushButton("Plugin-Ordner öffnen")
+        b_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_folder.clicked.connect(self._open_folder)
+        b_guide = QPushButton("Anleitung / Download")
+        b_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_guide.clicked.connect(lambda: self._open(self._GUIDE_URL))
+        setup.addWidget(b_folder)
+        setup.addWidget(b_guide)
+        setup.addStretch()
+        lay.addLayout(setup)
+
+        # optional: download from a URL the user trusts
+        note = QLabel("Optional: DLL von einer URL laden, der du vertraust "
+                      "(landet direkt im Plugin-Ordner):")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
+        lay.addWidget(note)
+        dl = QHBoxLayout()
+        dl.setSpacing(8)
+        self._url = QLineEdit()
+        self._url.setPlaceholderText("https://…/BlackwellHotspot.dll")
+        b_dl = QPushButton("Laden & installieren")
+        b_dl.setObjectName("btnAccent")
+        b_dl.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_dl.clicked.connect(self._download)
+        dl.addWidget(self._url, 1)
+        dl.addWidget(b_dl)
+        lay.addLayout(dl)
+
+        act = QHBoxLayout()
+        act.addStretch()
+        close = QPushButton("Schließen")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.accept)
+        act.addWidget(close)
+        lay.addLayout(act)
+
+    def _on_toggle(self, on: bool):
+        self._parent._af_enabled = on
+        self._parent._settings["afterburner_hotspot"] = on
+        save_settings(self._parent._settings)
+
+    @staticmethod
+    def _open(target: str):
+        try:
+            os.startfile(target)
+        except Exception:
+            pass
+
+    def _open_folder(self):
+        d = afterburner_plugin_dir()
+        if os.path.isdir(d):
+            self._open(d)
+        else:
+            QMessageBox.information(
+                self, "GPU Hotspot",
+                f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
+            )
+
+    def _download(self):
+        url = self._url.text().strip()
+        if not url:
+            return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            QMessageBox.warning(self, "GPU Hotspot", "Bitte eine gültige http(s)-URL angeben.")
+            return
+        d = afterburner_plugin_dir()
+        if not os.path.isdir(d):
+            QMessageBox.warning(self, "GPU Hotspot",
+                                f"Plugin-Ordner nicht gefunden:\n{d}")
+            return
+        try:
+            dest = os.path.join(d, "BlackwellHotspot.dll")
+            req = urllib.request.Request(url, headers={"User-Agent": "SystemManager"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            QMessageBox.information(
+                self, "GPU Hotspot",
+                "DLL installiert.\n\nStarte MSI Afterburner neu und aktiviere das "
+                "Plugin unter Einstellungen → Überwachung. Danach erkennt System "
+                "Manager den Hotspot automatisch."
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "GPU Hotspot", f"Download fehlgeschlagen:\n{e}")
+
+
 # ── Main window ─────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     _temps_signal = pyqtSignal(tuple, tuple, object, bool)
@@ -2115,6 +2282,10 @@ class MainWindow(QMainWindow):
         self._fan_names = load_fan_names()
         self._fan_rows: dict     = {}
         self._cooling_chips: dict = {}
+        self._settings = load_settings()
+        self._af_enabled = bool(self._settings.get("afterburner_hotspot", False))
+        self._last_ab_available = False
+        self._last_ab_hotspot = None
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -2352,6 +2523,7 @@ class MainWindow(QMainWindow):
         m.addAction("Open Display Settings",
             lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
         m.addSeparator()
+        m.addAction("GPU Hotspot (Afterburner)…", self._on_afterburner)
         m.addAction("Customize Design…", self._on_customize)
         m.addSeparator()
 
@@ -2568,7 +2740,29 @@ class MainWindow(QMainWindow):
             gpu_summary_parts.append(f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)}GB")
         self._sensor_gpu.set_summary("  ·  ".join(gpu_summary_parts) or "N/A")
         self._sensor_gpu.set_value("Core", f"{gpu_temp:.0f}°C" if gpu_temp is not None else "—")
-        self._sensor_gpu.set_value("Hotspot", self._fmt(sensors.get("gpu_hotspot"), "°C"))
+
+        # Hotspot: prefer the real value from Afterburner's plugin when enabled
+        # and present; LHM's Blackwell "hotspot" just mirrors core, so it's hidden
+        # (shown as "—") unless it's meaningfully above core.
+        self._last_ab_available = bool(sensors.get("ab_available"))
+        self._last_ab_hotspot = sensors.get("ab_hotspot")
+        ab_on = self._af_enabled and sensors.get("ab_available")
+        ab_hot = sensors.get("ab_hotspot")
+        if ab_on and ab_hot is not None:
+            self._sensor_gpu.set_value("Hotspot", f"{ab_hot:.0f}°C")
+        else:
+            lhm_hot = sensors.get("gpu_hotspot")
+            real = (lhm_hot is not None and gpu_temp is not None
+                    and (lhm_hot - gpu_temp) >= 2.0)
+            self._sensor_gpu.set_value("Hotspot", self._fmt(lhm_hot, "°C") if real else "—")
+        # Per-GDDR7 module temps from Afterburner (only when enabled)
+        if ab_on:
+            for t in sensors.get("ab_temps", []):
+                name, val = t.get("name"), t.get("value")
+                low = (name or "").lower()
+                if val is not None and ("hot spot" not in low and "hotspot" not in low):
+                    self._sensor_gpu.set_value(name, self._fmt(val, "°C"))
+
         self._sensor_gpu.set_value("Mem Junction", self._fmt(sensors.get("gpu_mem_junction"), "°C"))
         self._sensor_gpu.set_value("Core Clock", self._fmt(sensors.get("gpu_core_clock"), " MHz", 0))
         self._sensor_gpu.set_value("Mem Clock", self._fmt(sensors.get("gpu_mem_clock"), " MHz", 0))
@@ -2785,6 +2979,9 @@ class MainWindow(QMainWindow):
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(zip_path)
         self._quit()
+
+    def _on_afterburner(self):
+        AfterburnerDialog(self, self._last_ab_available, self._last_ab_hotspot).exec()
 
     def _on_customize(self):
         dlg = ThemeDialog(self)

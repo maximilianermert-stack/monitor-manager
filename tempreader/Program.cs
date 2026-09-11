@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO.MemoryMappedFiles;
 using System.Text.RegularExpressions;
 using LibreHardwareMonitor.Hardware;
 using Newtonsoft.Json;
@@ -269,6 +270,62 @@ try
 }
 catch { }
 
+// MSI Afterburner "MAHMSharedMemory" — read the real Blackwell GPU Hot Spot and
+// per-GDDR7 module temps that the community BlackwellHotspot.dll plugin exposes.
+// This is a plain read of a memory-mapped file (no driver, no MMIO) and only
+// works while Afterburner is running with that plugin. Entry layout: five
+// MAX_PATH(260) char arrays, then a float 'data' at offset 1300.
+bool  afterburnerAvailable = false;
+float? afterburnerHotspot  = null;
+var   afterburnerTemps     = new System.Collections.Generic.List<object>();
+try
+{
+    MemoryMappedFile? mmf = null;
+    foreach (var mapName in new[] { "MAHMSharedMemory", "Global\\MAHMSharedMemory" })
+    {
+        try { mmf = MemoryMappedFile.OpenExisting(mapName); break; } catch { }
+    }
+    if (mmf != null)
+    {
+        using (mmf)
+        using (var acc = mmf.CreateViewAccessor())
+        {
+            uint sig = acc.ReadUInt32(0);          // 'MAHM'
+            if (sig == 0x4D48414D || sig == 0x4D41484D)
+            {
+                afterburnerAvailable = true;
+                uint headerSize = acc.ReadUInt32(8);
+                uint numEntries = acc.ReadUInt32(12);
+                uint entrySize  = acc.ReadUInt32(16);
+                var nameBuf = new byte[260];
+                for (uint i = 0; i < numEntries && i < 512; i++)
+                {
+                    long off = headerSize + (long)i * entrySize;
+                    acc.ReadArray(off, nameBuf, 0, 260);
+                    int len = Array.IndexOf(nameBuf, (byte)0);
+                    if (len < 0) len = 260;
+                    string name = System.Text.Encoding.ASCII.GetString(nameBuf, 0, len).Trim();
+                    if (name.Length == 0) continue;
+                    float val = acc.ReadSingle(off + 260 * 5);
+                    debugHw.Add($"  AB:{name}={val}");
+                    string low = name.ToLowerInvariant();
+                    bool isGpuThermal = (low.Contains("hot") || low.Contains("junction")
+                                         || low.Contains("gddr") || low.Contains("vram")
+                                         || low.Contains("mem") || low.Contains("die"))
+                                        && (low.Contains("temp") || low.Contains("hot")
+                                            || low.Contains("junction"));
+                    if (isGpuThermal && val > 0 && val < 200)
+                        afterburnerTemps.Add(new { name = name, value = val });
+                    if (afterburnerHotspot == null && val > 0 && val < 200
+                        && (low.Contains("hot spot") || low.Contains("hotspot")))
+                        afterburnerHotspot = val;
+                }
+            }
+        }
+    }
+}
+catch { }
+
 var cpuCores = System.Linq.Enumerable.Select(
     System.Linq.Enumerable.OrderBy(cpuCoreData, kv => kv.Key),
     kv => new { index = kv.Key, clock = kv.Value.clock, load = kv.Value.load }
@@ -297,5 +354,8 @@ Console.WriteLine(JsonConvert.SerializeObject(new
     mb_vrm_temp      = mbVrmTemp,
     mb_voltages      = mbVoltages,
     fans             = fans,
+    ab_available     = afterburnerAvailable,
+    ab_hotspot       = afterburnerHotspot,
+    ab_temps         = afterburnerTemps,
     debug_hw         = debugHw,
 }));
