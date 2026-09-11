@@ -2182,9 +2182,38 @@ class AfterburnerDialog(QDialog):
         status.setStyleSheet(f"color:{color}; font-size:9.5pt; font-weight:600;")
         lay.addWidget(status)
 
-        self._chk = QCheckBox("Hotspot aus Afterburner anzeigen")
+        self._chk = QCheckBox("  Hotspot aus Afterburner anzeigen")
+        self._chk.setObjectName("hotspotToggle")
         self._chk.setChecked(bool(parent._af_enabled))
+        self._chk.setCursor(Qt.CursorShape.PointingHandCursor)
         self._chk.toggled.connect(self._on_toggle)
+        self._chk.setStyleSheet(f"""
+            QCheckBox#hotspotToggle {{
+                background: {CARD};
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                padding: 12px 14px;
+                font-size: 10.5pt;
+                font-weight: 600;
+                color: {TEXT};
+                spacing: 10px;
+            }}
+            QCheckBox#hotspotToggle:hover {{
+                background: {CARD_HI};
+                border-color: {ACCENT};
+            }}
+            QCheckBox#hotspotToggle::indicator {{
+                width: 20px; height: 20px;
+                border-radius: 5px;
+                border: 2px solid {BORDER_HI};
+                background: transparent;
+            }}
+            QCheckBox#hotspotToggle::indicator:hover {{ border-color: {ACCENT}; }}
+            QCheckBox#hotspotToggle::indicator:checked {{
+                background: {ACCENT};
+                border-color: {ACCENT};
+            }}
+        """)
         lay.addWidget(self._chk)
 
         # one-click: install the bundled Hotspot.dll into Afterburner's plugin folder
