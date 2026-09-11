@@ -63,6 +63,7 @@ jobs:
           --add-data "tempreader_out;tempreader"
           --add-data "audioswitch_out;audioswitch"
           --add-data "build_info.txt;."
+          --add-data "plugin;plugin"
           system_manager.py
 
       - name: Package onedir bundle as zip

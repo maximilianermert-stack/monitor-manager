@@ -699,6 +699,12 @@ def afterburner_plugin_dir() -> str:
     pf = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
     return os.path.join(pf, "MSI Afterburner", "Plugins", "Monitoring")
 
+
+def bundled_plugin_path() -> str:
+    """Path to the Hotspot.dll shipped inside the app bundle (or repo when dev)."""
+    base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "plugin", "Hotspot.dll")
+
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
 def _find_rtss_path() -> str:
     for key_path in [
@@ -2181,6 +2187,22 @@ class AfterburnerDialog(QDialog):
         self._chk.toggled.connect(self._on_toggle)
         lay.addWidget(self._chk)
 
+        # one-click: install the bundled Hotspot.dll into Afterburner's plugin folder
+        if os.path.isfile(bundled_plugin_path()):
+            b_install = QPushButton("Plugin automatisch installieren")
+            b_install.setObjectName("btnAccent")
+            b_install.setCursor(Qt.CursorShape.PointingHandCursor)
+            b_install.clicked.connect(self._install_bundled)
+            lay.addWidget(b_install)
+            hint = QLabel(
+                "Kopiert das mitgelieferte Hotspot-Plugin in den Afterburner-Ordner. "
+                "MSI Afterburner davor bitte schließen. Für den echten Hotspot (nicht nur "
+                "Mem Junction) danach das RTCore-Unlock durchführen."
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
+            lay.addWidget(hint)
+
         # one-time setup helpers
         setup = QHBoxLayout()
         setup.setSpacing(8)
@@ -2242,6 +2264,43 @@ class AfterburnerDialog(QDialog):
                 self, "GPU Hotspot",
                 f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
             )
+
+    def _install_bundled(self):
+        src = bundled_plugin_path()
+        if not os.path.isfile(src):
+            QMessageBox.warning(self, "GPU Hotspot", "Mitgeliefertes Plugin nicht gefunden.")
+            return
+        d = afterburner_plugin_dir()
+        if not os.path.isdir(d):
+            QMessageBox.warning(
+                self, "GPU Hotspot",
+                f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
+            )
+            return
+        dest = os.path.join(d, "Hotspot.dll")
+        try:
+            shutil.copyfile(src, dest)
+        except PermissionError:
+            QMessageBox.warning(
+                self, "GPU Hotspot",
+                "Konnte die DLL nicht schreiben — vermutlich läuft MSI Afterburner noch "
+                "und hat das Plugin geladen.\n\nBitte Afterburner komplett beenden "
+                "(auch im Infobereich) und dann erneut auf „Plugin automatisch "
+                "installieren“ klicken."
+            )
+            return
+        except Exception as e:
+            QMessageBox.warning(self, "GPU Hotspot", f"Installation fehlgeschlagen:\n{e}")
+            return
+        QMessageBox.information(
+            self, "GPU Hotspot",
+            "Plugin installiert.\n\n"
+            "1. MSI Afterburner starten\n"
+            "2. Einstellungen → Überwachung → die neuen Sensoren aktivieren\n"
+            "   („GPU memory junction temperature“ geht sofort)\n"
+            "3. Für den echten Hotspot zusätzlich das RTCore-Unlock durchführen\n\n"
+            "System Manager liest die Werte danach automatisch mit."
+        )
 
     def _download(self):
         url = self._url.text().strip()
