@@ -275,9 +275,10 @@ catch { }
 // This is a plain read of a memory-mapped file (no driver, no MMIO) and only
 // works while Afterburner is running with that plugin. Entry layout: five
 // MAX_PATH(260) char arrays, then a float 'data' at offset 1300.
-bool  afterburnerAvailable = false;
-float? afterburnerHotspot  = null;
-var   afterburnerTemps     = new System.Collections.Generic.List<object>();
+bool  afterburnerAvailable   = false;
+float? afterburnerHotspot    = null;
+float? afterburnerMemJunction = null;
+var   afterburnerTemps       = new System.Collections.Generic.List<object>();
 try
 {
     MemoryMappedFile? mmf = null;
@@ -308,17 +309,21 @@ try
                     if (name.Length == 0) continue;
                     float val = acc.ReadSingle(off + 260 * 5);
                     debugHw.Add($"  AB:{name}={val}");
+                    if (!(val > 0 && val < 200)) continue;
                     string low = name.ToLowerInvariant();
-                    bool isGpuThermal = (low.Contains("hot") || low.Contains("junction")
-                                         || low.Contains("gddr") || low.Contains("vram")
-                                         || low.Contains("mem") || low.Contains("die"))
-                                        && (low.Contains("temp") || low.Contains("hot")
-                                            || low.Contains("junction"));
-                    if (isGpuThermal && val > 0 && val < 200)
+                    // Exact sensor names from the BlackwellHotspot.dll source:
+                    // "GPU hotspot temperature/delta", "GPU average temperature",
+                    // "GPU hotspot CH0..3", "GPU memory junction temperature",
+                    // "VRAM hottest chip", "VRAM chip delta", "VRAM chip 0..15".
+                    bool isPluginTemp = low.Contains("hotspot") || low.Contains("junction")
+                                        || low.Contains("vram") || low.Contains("chip")
+                                        || (low.Contains("gpu") && low.Contains("average"));
+                    if (isPluginTemp)
                         afterburnerTemps.Add(new { name = name, value = val });
-                    if (afterburnerHotspot == null && val > 0 && val < 200
-                        && (low.Contains("hot spot") || low.Contains("hotspot")))
-                        afterburnerHotspot = val;
+                    if (afterburnerHotspot == null && low.Contains("hotspot") && low.Contains("temp"))
+                        afterburnerHotspot = val;               // "GPU hotspot temperature"
+                    if (afterburnerMemJunction == null && low.Contains("memory junction"))
+                        afterburnerMemJunction = val;           // "GPU memory junction temperature"
                 }
             }
         }
@@ -356,6 +361,7 @@ Console.WriteLine(JsonConvert.SerializeObject(new
     fans             = fans,
     ab_available     = afterburnerAvailable,
     ab_hotspot       = afterburnerHotspot,
+    ab_mem_junction  = afterburnerMemJunction,
     ab_temps         = afterburnerTemps,
     debug_hw         = debugHw,
 }));

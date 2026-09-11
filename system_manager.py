@@ -313,8 +313,9 @@ def get_temperatures():
                 k: _round(v, 2) for k, v in data.get("mb_voltages", {}).items()
             },
             # MSI Afterburner (BlackwellHotspot.dll) — real hotspot + module temps
-            "ab_available": bool(data.get("ab_available")),
-            "ab_hotspot":   _round(data.get("ab_hotspot")),
+            "ab_available":    bool(data.get("ab_available")),
+            "ab_hotspot":      _round(data.get("ab_hotspot")),
+            "ab_mem_junction": _round(data.get("ab_mem_junction")),
             "ab_temps": [
                 {"name": t.get("name"), "value": _round(t.get("value"))}
                 for t in data.get("ab_temps", []) if t.get("name")
@@ -2755,15 +2756,30 @@ class MainWindow(QMainWindow):
             real = (lhm_hot is not None and gpu_temp is not None
                     and (lhm_hot - gpu_temp) >= 2.0)
             self._sensor_gpu.set_value("Hotspot", self._fmt(lhm_hot, "°C") if real else "—")
-        # Per-GDDR7 module temps from Afterburner (only when enabled)
+        # Memory junction: prefer Afterburner plugin value (needs no unlock), fall back to LHM
+        ab_mj = sensors.get("ab_mem_junction")
+        if ab_on and ab_mj is not None:
+            self._sensor_gpu.set_value("Mem Junction", f"{ab_mj:.0f}°C")
+        else:
+            self._sensor_gpu.set_value("Mem Junction", self._fmt(sensors.get("gpu_mem_junction"), "°C"))
+
+        # Extra plugin temps (hotspot channels, VRAM per module) — exclude already-routed entries
         if ab_on:
             for t in sensors.get("ab_temps", []):
                 name, val = t.get("name"), t.get("value")
+                if val is None:
+                    continue
                 low = (name or "").lower()
-                if val is not None and ("hot spot" not in low and "hotspot" not in low):
-                    self._sensor_gpu.set_value(name, self._fmt(val, "°C"))
-
-        self._sensor_gpu.set_value("Mem Junction", self._fmt(sensors.get("gpu_mem_junction"), "°C"))
+                # Skip the two we already show in dedicated cells
+                if ("hotspot" in low and "temp" in low) or ("memory junction" in low):
+                    continue
+                # Shorten long plugin names: "GPU hotspot CH0" -> "Hotspot CH0", strip " temperature"
+                label = name
+                if label.lower().startswith("gpu "):
+                    label = label[4:]
+                label = label.replace(" temperature", "").strip()
+                label = label[:1].upper() + label[1:]
+                self._sensor_gpu.set_value(label, self._fmt(val, "°C"))
         self._sensor_gpu.set_value("Core Clock", self._fmt(sensors.get("gpu_core_clock"), " MHz", 0))
         self._sensor_gpu.set_value("Mem Clock", self._fmt(sensors.get("gpu_mem_clock"), " MHz", 0))
         self._sensor_gpu.set_value("Power", f"{gpu_power:.0f} W" if gpu_power is not None else "—")
