@@ -22,8 +22,9 @@ from PyQt6.QtWidgets import (
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QLayout,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
     QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog, QCheckBox,
+    QSplitter,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen,
 )
@@ -1404,6 +1405,10 @@ QPushButton#btnBlue:hover   {{ background: #162030; border-color: {BLUE}; }}
 QPushButton#btnAccent {{ color: {ACCENT}; border-color: {ACCENT_DIM}; }}
 QPushButton#btnAccent:hover {{ background: {ACCENT_BG}; border-color: {ACCENT}; }}
 
+QSplitter#lockSplit::handle {{ background: transparent; }}
+QSplitter#lockSplit[unlocked="true"]::handle {{ background: {ACCENT_DIM}; margin: 3px; border-radius: 3px; }}
+QSplitter#lockSplit[unlocked="true"]::handle:hover {{ background: {ACCENT}; }}
+
 QMenu {{
     background: {CARD};
     border: 1px solid {BORDER};
@@ -2375,6 +2380,8 @@ class MainWindow(QMainWindow):
         self._af_enabled = bool(self._settings.get("afterburner_hotspot", False))
         self._last_ab_available = False
         self._last_ab_hotspot = None
+        self._splitters: list = []
+        self._layout_unlocked = bool(self._settings.get("layout_unlocked", False))
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -2464,20 +2471,26 @@ class MainWindow(QMainWindow):
         ov_lay.setContentsMargins(16, 14, 16, 14)
         ov_lay.setSpacing(12)
 
-        metrics = QHBoxLayout()
-        metrics.setSpacing(10)
+        def _section(title_text, content):
+            w = QWidget()
+            v = QVBoxLayout(w)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(6)
+            v.addWidget(_section_title(title_text))
+            v.addWidget(content)
+            return w
+
+        # Metric chips (CPU/GPU/System/Controller) — width ratios adjustable when unlocked
+        chips_split = self._make_splitter(Qt.Orientation.Horizontal, "ov_chips")
         for chip in (self._chip_cpu, self._chip_gpu, self._chip_sys, self._chip_ctrl):
             chip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            metrics.addWidget(chip)
-        ov_lay.addLayout(metrics)
+            chips_split.addWidget(chip)
+        chips_split.setSizes([1, 1, 1, 1])
 
-        ov_lay.addWidget(_section_title("Cooling"))
         cool_card = QFrame()
         cool_card.setObjectName("monitorCard")
         self._cooling_layout = FlowLayout(cool_card, margin=12, spacing=8)
-        ov_lay.addWidget(cool_card)
 
-        ov_lay.addWidget(_section_title("Displays"))
         disp_card = QFrame()
         disp_card.setObjectName("monitorCard")
         dcl = QVBoxLayout(disp_card)
@@ -2486,9 +2499,16 @@ class MainWindow(QMainWindow):
         self._displays_lbl.setStyleSheet(f"color:{TEXT}; font-size:9.5pt;")
         self._displays_lbl.setWordWrap(True)
         dcl.addWidget(self._displays_lbl)
-        ov_lay.addWidget(disp_card)
 
-        ov_lay.addStretch()
+        # Section heights adjustable when unlocked; a trailing filler keeps the
+        # resting look top-aligned (like before) until the user drags a divider.
+        ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections")
+        ov_split.addWidget(chips_split)
+        ov_split.addWidget(_section("Cooling", cool_card))
+        ov_split.addWidget(_section("Displays", disp_card))
+        self._add_filler(ov_split)
+        ov_split.setSizes([120, 210, 130, 320])
+        ov_lay.addWidget(ov_split)
         ov_scroll.setWidget(ov_content)
 
         # System (sensors) tab — expandable per-component readouts
@@ -2577,6 +2597,11 @@ class MainWindow(QMainWindow):
         self._misc_btn.clicked.connect(self._show_misc_menu)
         bl.addWidget(self._misc_btn)
 
+        self._lock_btn = QPushButton()
+        self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._lock_btn.clicked.connect(self._on_toggle_lock)
+        bl.addWidget(self._lock_btn)
+
         bl.addStretch()
 
         bl.addWidget(_btn("↻  Refresh", "btnGreen", self.refresh_monitors))
@@ -2584,6 +2609,82 @@ class MainWindow(QMainWindow):
 
         self._build_misc_menu()
         self._refresh_hdr_btn()
+        self._restore_splits()
+        self._apply_lock()
+
+    # ── Resizable layout (lock / unlock via draggable dividers) ─────────────────
+    def _make_splitter(self, orientation, key):
+        sp = QSplitter(orientation)
+        sp.setObjectName("lockSplit")
+        sp.setChildrenCollapsible(False)
+        sp.setHandleWidth(10)
+        sp.setProperty("_savekey", key)
+        sp.setProperty("unlocked", self._layout_unlocked)
+        sp.splitterMoved.connect(lambda *_a, s=sp: self._on_split_moved(s))
+        self._splitters.append(sp)
+        return sp
+
+    def _add_filler(self, splitter):
+        """Trailing empty pane that soaks up leftover space so real sections keep
+        their natural (top-aligned) sizes at rest, like the old fixed layout."""
+        f = QWidget()
+        f.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        splitter.addWidget(f)
+        splitter.setStretchFactor(splitter.count() - 1, 1)
+
+    def _apply_lock(self):
+        on = self._layout_unlocked
+        for sp in self._splitters:
+            sp.setProperty("unlocked", on)
+            for i in range(1, sp.count()):
+                h = sp.handle(i)
+                if h is not None:
+                    h.setEnabled(on)
+                    h.setCursor(
+                        Qt.CursorShape.SplitHCursor
+                        if sp.orientation() == Qt.Orientation.Horizontal
+                        else Qt.CursorShape.SplitVCursor
+                    )
+            sp.style().unpolish(sp)
+            sp.style().polish(sp)
+        self._refresh_lock_btn()
+
+    def _refresh_lock_btn(self):
+        if self._layout_unlocked:
+            self._lock_btn.setText("🔓  Layout entsperrt")
+            self._lock_btn.setObjectName("btnAccent")
+        else:
+            self._lock_btn.setText("🔒  Layout")
+            self._lock_btn.setObjectName("")
+        self._lock_btn.style().unpolish(self._lock_btn)
+        self._lock_btn.style().polish(self._lock_btn)
+
+    def _on_toggle_lock(self):
+        self._layout_unlocked = not self._layout_unlocked
+        self._settings["layout_unlocked"] = self._layout_unlocked
+        save_settings(self._settings)
+        self._apply_lock()
+
+    def _on_split_moved(self, sp):
+        if not self._layout_unlocked:
+            return
+        key = sp.property("_savekey")
+        if not key:
+            return
+        state = bytes(sp.saveState().toBase64()).decode("ascii")
+        self._settings.setdefault("splits", {})[key] = state
+        save_settings(self._settings)
+
+    def _restore_splits(self):
+        saved = self._settings.get("splits", {}) or {}
+        for sp in self._splitters:
+            key = sp.property("_savekey")
+            data = saved.get(key)
+            if data:
+                try:
+                    sp.restoreState(QByteArray.fromBase64(data.encode("ascii")))
+                except Exception:
+                    pass
 
     # ── Misc popup menu ───────────────────────────────────────────────────────
     def _build_misc_menu(self):
