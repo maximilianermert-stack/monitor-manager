@@ -706,6 +706,57 @@ def bundled_plugin_path() -> str:
     base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "plugin", "Hotspot.dll")
 
+
+def afterburner_root() -> str:
+    """MSI Afterburner install folder (holds RTCore.cfg and Profiles\\)."""
+    pf = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    return os.path.join(pf, "MSI Afterburner")
+
+
+def detect_nvidia_device_id():
+    """Read the RTX GPU's 4-hex PCI DeviceID (e.g. '2C02') from the registry.
+
+    The DeviceID is per GPU model (same for every board partner), so this is the
+    exact value the RTCore unlock needs. Returns the id (upper-case) or None."""
+    import re
+    if not sys.platform.startswith("win"):
+        return None
+    DISPLAY_CLASS = "{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Enum\PCI") as pci:
+            count = winreg.QueryInfoKey(pci)[0]
+            fallback = None
+            for i in range(count):
+                dev_key = winreg.EnumKey(pci, i)
+                if not dev_key.upper().startswith("VEN_10DE&DEV_"):
+                    continue
+                m = re.search(r"DEV_([0-9A-Fa-f]{4})", dev_key)
+                if not m:
+                    continue
+                dev = m.group(1).upper()
+                if fallback is None:
+                    fallback = dev
+                try:
+                    with winreg.OpenKey(pci, dev_key) as dk:
+                        for j in range(winreg.QueryInfoKey(dk)[0]):
+                            with winreg.OpenKey(dk, winreg.EnumKey(dk, j)) as ik:
+                                svc = cls = ""
+                                try:
+                                    svc, _ = winreg.QueryValueEx(ik, "Service")
+                                except OSError:
+                                    pass
+                                try:
+                                    cls, _ = winreg.QueryValueEx(ik, "ClassGUID")
+                                except OSError:
+                                    pass
+                                if str(svc).lower() == "nvlddmkm" or str(cls).lower() == DISPLAY_CLASS:
+                                    return dev
+                except OSError:
+                    pass
+            return fallback
+    except OSError:
+        return None
+
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
 def _find_rtss_path() -> str:
     for key_path in [
@@ -2251,6 +2302,56 @@ class AfterburnerDialog(QDialog):
         setup.addStretch()
         lay.addLayout(setup)
 
+        # ── Unlock the real hotspot: auto-detect the DeviceID, show exact lines ──
+        self._dev_id = detect_nvidia_device_id()
+        usep = QFrame()
+        usep.setFrameShape(QFrame.Shape.HLine)
+        usep.setStyleSheet(f"background:{BORDER}; border:none; max-height:1px;")
+        lay.addWidget(usep)
+
+        uh = QLabel("Echten Hotspot freischalten (RTCore-Unlock)")
+        uh.setStyleSheet(f"color:{TEXT}; font-size:10pt; font-weight:700;")
+        lay.addWidget(uh)
+
+        dev = self._dev_id or "XXXX"
+        if self._dev_id:
+            det = QLabel(f"✔  NVIDIA-GPU erkannt · DeviceID <b>{dev}</b>")
+            det.setStyleSheet(f"color:{GREEN}; font-size:9pt;")
+        else:
+            det = QLabel("DeviceID nicht automatisch erkannt — aus GPU-Z eintragen "
+                         "(Feld „Device ID“, der Teil nach 10DE).")
+            det.setStyleSheet(f"color:{AMBER}; font-size:9pt;")
+        det.setTextFormat(Qt.TextFormat.RichText)
+        det.setWordWrap(True)
+        lay.addWidget(det)
+
+        info = QLabel("MSI Afterburner schließen, dann diese zwei Zeilen ergänzen:")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
+        lay.addWidget(info)
+
+        self._snippet_row(lay, "1)  in  RTCore.cfg  →  Abschnitt  [GPU_10DE]", f"G1B2 = {dev}h")
+        self._snippet_row(lay, "2)  in  Profiles\\VEN_10DE&DEV_…cfg  →  [Settings]", "LowLevelMonitoring = 0")
+
+        ubtns = QHBoxLayout()
+        ubtns.setSpacing(8)
+        b_rt = QPushButton("RTCore.cfg öffnen")
+        b_rt.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_rt.clicked.connect(self._open_rtcore)
+        b_pr = QPushButton("Profile-Ordner öffnen")
+        b_pr.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_pr.clicked.connect(self._open_profiles)
+        ubtns.addWidget(b_rt)
+        ubtns.addWidget(b_pr)
+        ubtns.addStretch()
+        lay.addLayout(ubtns)
+
+        warn = QLabel("⚠  Zeile 2 nicht vergessen — sonst zeigt Afterburner falsche Taktraten "
+                      "oder stürzt ab. Danach Afterburner starten und die neuen Sensoren anhaken.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(f"color:{AMBER}; font-size:8pt;")
+        lay.addWidget(warn)
+
         # optional: download from a URL the user trusts
         note = QLabel("Optional: DLL von einer URL laden, der du vertraust "
                       "(landet direkt im Plugin-Ordner):")
@@ -2297,6 +2398,60 @@ class AfterburnerDialog(QDialog):
             QMessageBox.information(
                 self, "GPU Hotspot",
                 f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
+            )
+
+    def _snippet_row(self, lay, caption, code):
+        cap = QLabel(caption)
+        cap.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
+        lay.addWidget(cap)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        field = QLineEdit(code)
+        field.setReadOnly(True)
+        field.setCursor(Qt.CursorShape.IBeamCursor)
+        field.setStyleSheet(
+            f"font-family:Consolas,'Courier New',monospace; background:{CARD}; "
+            f"color:{TEXT}; border:1px solid {BORDER}; border-radius:6px; padding:7px 10px;"
+        )
+        b = QPushButton("Kopieren")
+        b.setObjectName("btnAccent")
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.clicked.connect(lambda _=None, t=code, btn=b: self._copy(t, btn))
+        row.addWidget(field, 1)
+        row.addWidget(b)
+        lay.addLayout(row)
+
+    def _copy(self, text, btn=None):
+        try:
+            QApplication.clipboard().setText(text)
+            if btn is not None:
+                btn.setText("Kopiert ✓")
+                QTimer.singleShot(1400, lambda: btn.setText("Kopieren"))
+        except Exception:
+            pass
+
+    def _open_rtcore(self):
+        p = os.path.join(afterburner_root(), "RTCore.cfg")
+        if os.path.isfile(p):
+            try:
+                import subprocess
+                subprocess.Popen(["notepad.exe", p])
+            except Exception:
+                self._open(afterburner_root())
+        else:
+            QMessageBox.information(
+                self, "GPU Hotspot",
+                f"RTCore.cfg nicht gefunden:\n{p}\n\nIst MSI Afterburner installiert?"
+            )
+
+    def _open_profiles(self):
+        p = os.path.join(afterburner_root(), "Profiles")
+        if os.path.isdir(p):
+            self._open(p)
+        else:
+            QMessageBox.information(
+                self, "GPU Hotspot",
+                f"Profile-Ordner nicht gefunden:\n{p}\n\nIst MSI Afterburner installiert?"
             )
 
     def _install_bundled(self):
