@@ -1568,9 +1568,11 @@ class StatsChip(QFrame):
         self._sub.setWordWrap(True)
         self._sub.setStyleSheet(f"color: {SUBTEXT}; font-size: 8.5pt;")
 
+        lay.addStretch()
         lay.addWidget(name_lbl)
         lay.addWidget(self._val)
         lay.addWidget(self._sub)
+        lay.addStretch()
 
     @staticmethod
     def fmt(value, unit: str) -> str:
