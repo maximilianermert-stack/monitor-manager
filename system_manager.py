@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog, QCheckBox,
     QSplitter,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray, QEvent
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen,
 )
@@ -1386,6 +1386,7 @@ RED     = "#f87171"
 AMBER   = "#fbbf24"
 PEACH   = "#fb923c"
 BLUE    = "#60a5fa"
+MAGENTA = "#e879f9"
 
 APP_QSS = f"""
 * {{
@@ -1459,6 +1460,9 @@ QPushButton#btnAccent:hover {{ background: {ACCENT_BG}; border-color: {ACCENT}; 
 QSplitter#lockSplit::handle {{ background: transparent; }}
 QSplitter#lockSplit[unlocked="true"]::handle {{ background: {ACCENT_DIM}; margin: 3px; border-radius: 3px; }}
 QSplitter#lockSplit[unlocked="true"]::handle:hover {{ background: {ACCENT}; }}
+
+QFrame#coolTile {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#coolTile:hover {{ border-color: {BORDER_HI}; }}
 
 QMenu {{
     background: {CARD};
@@ -1560,6 +1564,8 @@ class StatsChip(QFrame):
         )
 
         self._sub = QLabel("")
+        self._sub.setTextFormat(Qt.TextFormat.RichText)
+        self._sub.setWordWrap(True)
         self._sub.setStyleSheet(f"color: {SUBTEXT}; font-size: 8.5pt;")
 
         lay.addWidget(name_lbl)
@@ -2531,6 +2537,7 @@ class MainWindow(QMainWindow):
         self._fan_names = load_fan_names()
         self._fan_rows: dict     = {}
         self._cooling_chips: dict = {}
+        self._cooling_tiles: list = []
         self._settings = load_settings()
         self._af_enabled = bool(self._settings.get("afterburner_hotspot", False))
         self._last_ab_available = False
@@ -2642,9 +2649,16 @@ class MainWindow(QMainWindow):
             chips_split.addWidget(chip)
         chips_split.setSizes([1, 1, 1, 1])
 
+        # Cooling: large fan tiles in a responsive grid that fills the card
         cool_card = QFrame()
         cool_card.setObjectName("monitorCard")
-        self._cooling_layout = FlowLayout(cool_card, margin=12, spacing=8)
+        cool_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._cool_card = cool_card
+        self._cooling_layout = QGridLayout(cool_card)
+        self._cooling_layout.setContentsMargins(12, 12, 12, 12)
+        self._cooling_layout.setSpacing(10)
+        self._cool_cols = 0
+        cool_card.installEventFilter(self)
 
         disp_card = QFrame()
         disp_card.setObjectName("monitorCard")
@@ -2655,14 +2669,16 @@ class MainWindow(QMainWindow):
         self._displays_lbl.setWordWrap(True)
         dcl.addWidget(self._displays_lbl)
 
-        # Section heights adjustable when unlocked; a trailing filler keeps the
-        # resting look top-aligned (like before) until the user drags a divider.
-        ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections")
+        # Section heights adjustable when unlocked. Cooling takes the stretch so it
+        # fills the free space (big fan tiles) instead of leaving a dead gap.
+        ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections2")
         ov_split.addWidget(chips_split)
         ov_split.addWidget(_section("Cooling", cool_card))
         ov_split.addWidget(_section("Displays", disp_card))
-        self._add_filler(ov_split)
-        ov_split.setSizes([120, 210, 130, 320])
+        ov_split.setStretchFactor(0, 0)
+        ov_split.setStretchFactor(1, 1)
+        ov_split.setStretchFactor(2, 0)
+        ov_split.setSizes([132, 470, 120])
         ov_lay.addWidget(ov_split)
         ov_scroll.setWidget(ov_content)
 
@@ -2958,25 +2974,46 @@ class MainWindow(QMainWindow):
             self._worker.ready.connect(self._apply_temps)
             self._worker.start()
 
+    def _overview_hotspot(self, gpu_temp, sensors: dict):
+        """Hotspot value for the GPU overview chip: Afterburner plugin value when
+        enabled/available, else LHM's only if it's meaningfully above core."""
+        if self._af_enabled and sensors.get("ab_available") and sensors.get("ab_hotspot") is not None:
+            return sensors.get("ab_hotspot")
+        lhm_hot = sensors.get("gpu_hotspot")
+        if lhm_hot is not None and gpu_temp is not None and (lhm_hot - gpu_temp) >= 2.0:
+            return lhm_hot
+        return None
+
     def _apply_temps(self, temps: tuple, ram: tuple, battery, hdr: bool, fans: list, sensors: dict):
         (cpu_temp, cpu_load, cpu_power,
          gpu_temp, gpu_load, gpu_power,
          gpu_mem_used, gpu_mem_total) = temps
         ram_used, ram_total = ram
 
+        def _use_watt(load, power):
+            parts = []
+            if load is not None:
+                parts.append(f"{load:.0f} %")
+            if power is not None:
+                parts.append(f"{power:.0f} W")
+            return "  ·  ".join(parts)
+
         self._chip_cpu.set_value(
             StatsChip.fmt(f"{cpu_temp:.0f}" if cpu_temp is not None else None, "°C"),
-            f"{cpu_load:.0f}% Last" if cpu_load is not None else "",
+            _use_watt(cpu_load, cpu_power),
         )
 
-        gpu_sub = []
-        if gpu_load is not None:
-            gpu_sub.append(f"{gpu_load:.0f}%")
-        if gpu_mem_used is not None and gpu_mem_total is not None:
-            gpu_sub.append(f"{gpu_mem_used/1024:.1f}/{round(gpu_mem_total/1024)} GB")
+        # GPU: big core temp, hotspot highlighted in magenta below, then usage · watt
+        hot = self._overview_hotspot(gpu_temp, sensors)
+        gpu_lines = []
+        if hot is not None:
+            gpu_lines.append(f'<span style="color:{MAGENTA}; font-weight:700;">Hotspot {hot:.0f} °C</span>')
+        uw = _use_watt(gpu_load, gpu_power)
+        if uw:
+            gpu_lines.append(uw)
         self._chip_gpu.set_value(
             StatsChip.fmt(f"{gpu_temp:.0f}" if gpu_temp is not None else None, "°C"),
-            "  ·  ".join(gpu_sub),
+            "<br>".join(gpu_lines),
         )
 
         pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
@@ -3017,22 +3054,57 @@ class MainWindow(QMainWindow):
         self._fan_names[sensor_name] = new_name
         save_fan_names(self._fan_names)
 
-    def _make_cooling_chip(self, name: str, pct):
-        chip = QFrame()
-        chip.setObjectName("sensorCell")
-        row = QHBoxLayout(chip)
-        row.setContentsMargins(11, 6, 11, 6)
-        row.setSpacing(8)
+    def _make_cooling_tile(self, name: str, pct):
+        tile = QFrame()
+        tile.setObjectName("coolTile")
+        tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tile.setMinimumSize(120, 74)
+        v = QVBoxLayout(tile)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(2)
         nl = QLabel(name)
-        nl.setStyleSheet("font-weight:600; font-size:9pt;")
+        nl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt; font-weight:600;")
+        nl.setWordWrap(True)
         pl = QLabel(f"{pct}%")
-        pl.setStyleSheet(f"color:{ACCENT}; font-weight:600; font-size:8.5pt;")
-        row.addWidget(nl)
-        row.addWidget(pl)
-        return chip, pl
+        pl.setStyleSheet(f"color:{ACCENT}; font-size:22pt; font-weight:700;")
+        v.addWidget(nl)
+        v.addStretch()
+        v.addWidget(pl)
+        return tile, pl
+
+    def _relayout_cooling(self):
+        """Re-flow the cooling tiles into as many columns as the card width allows,
+        with every cell stretching so the tiles grow to fill the space."""
+        tiles = getattr(self, "_cooling_tiles", [])
+        if not tiles:
+            return
+        w = self._cool_card.width() or 640
+        cols = max(1, min(len(tiles), (w - 24) // 160))
+        if cols == self._cool_cols:
+            return
+        self._cool_cols = cols
+        while self._cooling_layout.count():
+            self._cooling_layout.takeAt(0)
+        for i in range(12):
+            self._cooling_layout.setColumnStretch(i, 0)
+            self._cooling_layout.setRowStretch(i, 0)
+        rows = 0
+        for i, tile in enumerate(tiles):
+            r, c = divmod(i, cols)
+            self._cooling_layout.addWidget(tile, r, c)
+            rows = max(rows, r + 1)
+        for c in range(cols):
+            self._cooling_layout.setColumnStretch(c, 1)
+        for r in range(rows):
+            self._cooling_layout.setRowStretch(r, 1)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "_cool_card", None) and event.type() == QEvent.Type.Resize:
+            self._relayout_cooling()
+        return super().eventFilter(obj, event)
 
     def _update_cooling(self, fans: list):
-        """Overview 'Cooling' strip: one small chip per controllable board fan
+        """Overview 'Cooling' area: one large tile per controllable board fan
         (those reporting a PWM %). GPU zero-fans are left out to reduce clutter."""
         shown = [f for f in fans if f.get("pct") is not None]
         incoming = {f["name"] for f in shown}
@@ -3042,11 +3114,14 @@ class MainWindow(QMainWindow):
                 if item.widget():
                     item.widget().deleteLater()
             self._cooling_chips.clear()
+            self._cooling_tiles = []
             for f in shown:
                 display = self._fan_names.get(f["name"], f["name"])
-                chip, pct_lbl = self._make_cooling_chip(display, f["pct"])
-                self._cooling_layout.addWidget(chip)
+                tile, pct_lbl = self._make_cooling_tile(display, f["pct"])
+                self._cooling_tiles.append(tile)
                 self._cooling_chips[f["name"]] = pct_lbl
+            self._cool_cols = 0
+            self._relayout_cooling()
         else:
             for f in shown:
                 self._cooling_chips[f["name"]].setText(f"{f['pct']}%")
