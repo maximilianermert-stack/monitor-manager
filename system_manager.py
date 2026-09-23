@@ -2673,8 +2673,16 @@ class MainWindow(QMainWindow):
 
         # Section heights adjustable when unlocked. Cooling takes the stretch so it
         # fills the free space (big fan tiles) instead of leaving a dead gap.
-        ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections2")
-        ov_split.addWidget(chips_split)
+        # Wrap the chips splitter in a plain container: a QSplitter nested directly
+        # as a pane of another QSplitter confuses height allocation, so the vertical
+        # divider below it wouldn't resize the chip row. The holder fixes that.
+        chips_holder = QWidget()
+        chl = QVBoxLayout(chips_holder)
+        chl.setContentsMargins(0, 0, 0, 0)
+        chl.addWidget(chips_split)
+
+        ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections3")
+        ov_split.addWidget(chips_holder)
         ov_split.addWidget(_section("Cooling", cool_card))
         ov_split.addWidget(_section("Displays", disp_card))
         ov_split.setStretchFactor(0, 0)
