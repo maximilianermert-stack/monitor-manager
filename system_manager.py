@@ -1556,10 +1556,12 @@ class StatsChip(QFrame):
         lay.setSpacing(2)
 
         name_lbl = QLabel(label.upper())
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         name_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 8pt; font-weight: 600;")
 
         self._val = QLabel("—")
         self._val.setTextFormat(Qt.TextFormat.RichText)
+        self._val.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._val.setStyleSheet(
             f"color: {value_color}; font-size: 21pt; font-weight: 700;"
         )
@@ -1567,6 +1569,7 @@ class StatsChip(QFrame):
         self._sub = QLabel("")
         self._sub.setTextFormat(Qt.TextFormat.RichText)
         self._sub.setWordWrap(True)
+        self._sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sub.setStyleSheet(f"color: {SUBTEXT}; font-size: 8.5pt;")
 
         lay.addStretch()
