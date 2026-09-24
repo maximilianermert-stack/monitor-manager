@@ -3033,7 +3033,7 @@ class MainWindow(QMainWindow):
         pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
         self._chip_sys.set_value(
             StatsChip.fmt(f"{sum(pwr_parts):.0f}" if pwr_parts else None, "W"),
-            f"{ram_used:.1f}/{ram_total} GB RAM",
+            f'<span style="color:{FOREST}; font-weight:600;">{ram_used:.1f}/{ram_total} GB RAM</span>',
         )
 
         self._chip_ctrl.set_value(battery if battery else "—",
