@@ -1387,6 +1387,7 @@ AMBER   = "#fbbf24"
 PEACH   = "#fb923c"
 BLUE    = "#60a5fa"
 MAGENTA = "#e879f9"
+FOREST  = "#3fae5a"   # forest green (RAM)
 
 APP_QSS = f"""
 * {{
@@ -1935,11 +1936,13 @@ class SensorCard(QFrame):
 
     _COLS = 4
 
-    def __init__(self, mono: str, name: str, static_labels=(), parent=None):
+    def __init__(self, mono: str, name: str, static_labels=(), parent=None, accent: str = None):
         super().__init__(parent)
         self.setObjectName("monitorCard")
         self._cells: dict = {}
         self._cell_count = 0
+        acc = accent or ACCENT
+        acc_dim = _darken(acc, 0.28)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1957,7 +1960,7 @@ class SensorCard(QFrame):
 
         mono_lbl = QLabel(mono)
         mono_lbl.setStyleSheet(
-            f"color:{ACCENT}; background:{ACCENT_DIM}; font-size:7.5pt; "
+            f"color:{acc}; background:{acc_dim}; font-size:7.5pt; "
             f"font-weight:700; padding:4px 6px; border-radius:5px;"
         )
         head.addWidget(mono_lbl)
@@ -2703,12 +2706,13 @@ class MainWindow(QMainWindow):
         sensors_layout.setContentsMargins(16, 12, 16, 12)
         sensors_layout.setSpacing(10)
 
-        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"])
+        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"], accent=PEACH)
         self._sensor_gpu = SensorCard(
             "GPU", "Graphics",
             ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
+            accent=BLUE,
         )
-        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"])
+        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"], accent=FOREST)
         self._sensor_mb  = SensorCard("MB", "Motherboard")
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
