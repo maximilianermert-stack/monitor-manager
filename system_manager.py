@@ -1465,6 +1465,12 @@ QSplitter#lockSplit[unlocked="true"]::handle:hover {{ background: {ACCENT}; }}
 QFrame#coolTile {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
 QFrame#coolTile:hover {{ border-color: {BORDER_HI}; }}
 
+QFrame#stepCard {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
+QFrame#stepCardDone {{ background: {CARD}; border: 1px solid #1f3a2a; border-radius: 10px; }}
+QFrame#stepHead {{ background: transparent; border: none; }}
+QLabel#stepNum {{ background: {ACCENT_DIM}; color: {ACCENT}; border-radius: 13px; font-weight: 700; font-size: 10pt; }}
+QLabel#stepNumDone {{ background: #123a24; color: {FOREST}; border-radius: 13px; font-weight: 700; font-size: 11pt; }}
+
 QMenu {{
     background: {CARD};
     border: 1px solid {BORDER};
@@ -2220,158 +2226,152 @@ class AfterburnerDialog(QDialog):
     def __init__(self, parent, available: bool, hotspot):
         super().__init__(parent)
         self._parent = parent
-        self.setWindowTitle("GPU Hotspot (Afterburner)")
+        self.setWindowTitle("GPU-Hotspot einrichten")
         self.setModal(True)
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(500)
+        self._dev_id = detect_nvidia_device_id()
+        dev = self._dev_id or "XXXX"
+
+        af_on    = bool(parent._af_enabled)
+        detected = bool(available)
+        has_hot  = hotspot is not None
+        s1_done  = detected
+        s2_done  = has_hot
+        s3_done  = has_hot and af_on
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(22, 20, 22, 20)
-        lay.setSpacing(12)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(10)
 
-        title = QLabel("GPU Hotspot über MSI Afterburner")
+        title = QLabel("GPU-Hotspot einrichten")
         title.setStyleSheet("font-size:13pt; font-weight:700;")
         lay.addWidget(title)
         sub = QLabel(
-            "Der echte RTX-50-Hotspot (+ GDDR7-Module) ist nur über MSI Afterburner "
-            "mit dem BlackwellHotspot.dll-Plugin lesbar. Läuft beides, liest System "
-            "Manager die Werte automatisch mit — ohne eigenen Treiber."
+            "Die echte Hotspot-Temperatur deiner RTX 50 ist von NVIDIA gesperrt. Über "
+            "MSI Afterburner holen wir sie in 3 Schritten — wir lesen dabei nur Werte, "
+            "es wird nichts an der Karte verändert."
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
         lay.addWidget(sub)
 
-        if available:
-            txt = "✔  Afterburner erkannt"
-            if hotspot is not None:
-                txt += f"   ·   Hotspot: {hotspot:.0f} °C"
-            color = GREEN
+        # status pill: how far the setup has progressed
+        if not s1_done:
+            s_txt, s_col, s_bg, s_bd = "●  Noch nicht eingerichtet · Schritt 1 von 3", AMBER, "#241f10", "#3d2e12"
+        elif not s2_done:
+            s_txt, s_col, s_bg, s_bd = "●  Schritt 2 von 3 — Hotspot freischalten", AMBER, "#241f10", "#3d2e12"
+        elif not s3_done:
+            s_txt, s_col, s_bg, s_bd = "●  Schritt 3 von 3 — Anzeige einschalten", AMBER, "#241f10", "#3d2e12"
         else:
-            txt = "✖  Afterburner nicht erkannt — läuft es, und ist das Plugin aktiviert?"
-            color = RED
-        status = QLabel(txt)
-        status.setStyleSheet(f"color:{color}; font-size:9.5pt; font-weight:600;")
-        lay.addWidget(status)
+            s_txt = f"✔  Hotspot aktiv ({hotspot:.0f} °C)" if has_hot else "✔  Hotspot aktiv"
+            s_col, s_bg, s_bd = FOREST, "#0f2a18", "#1f3a2a"
+        pill = QLabel(s_txt)
+        pill.setStyleSheet(
+            f"color:{s_col}; background:{s_bg}; border:1px solid {s_bd}; "
+            f"border-radius:12px; padding:6px 12px; font-size:9pt; font-weight:600;"
+        )
+        pill.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        lay.addWidget(pill)
 
-        self._chk = QCheckBox("  Hotspot aus Afterburner anzeigen")
+        # ── Step 1: install the plugin ──
+        b1 = self._make_step(lay, 1, "Plugin installieren", s1_done, not s1_done)
+        b1.addWidget(self._lead(
+            "Das Hotspot-Plugin ist installiert und wird erkannt." if s1_done else
+            "Lade das kleine Hotspot-Plugin dorthin, wo Afterburner es findet. Ein "
+            "Klick genügt — <b>MSI Afterburner vorher schließen</b>."
+        ))
+        if os.path.isfile(bundled_plugin_path()):
+            b_install = QPushButton("Plugin neu installieren" if s1_done else "Plugin automatisch installieren")
+            b_install.setObjectName("btnAccent")
+            b_install.setCursor(Qt.CursorShape.PointingHandCursor)
+            b_install.clicked.connect(self._install_bundled)
+            b1.addWidget(b_install)
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        b_folder = QPushButton("Plugin-Ordner öffnen")
+        b_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_folder.clicked.connect(self._open_folder)
+        b_guide = QPushButton("Anleitung")
+        b_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_guide.clicked.connect(lambda: self._open(self._GUIDE_URL))
+        row1.addWidget(b_folder)
+        row1.addWidget(b_guide)
+        row1.addStretch()
+        b1.addLayout(row1)
+
+        # ── Step 2: RTCore unlock (auto-detected DeviceID + copy lines) ──
+        b2 = self._make_step(lay, 2, "Hotspot freischalten", s2_done, s1_done and not s2_done)
+        b2.addWidget(self._lead(
+            "Einmalig: zwei Zeilen in Afterburners Konfig ergänzen. "
+            "<b>Afterburner vorher schließen</b> (auch im Infobereich)."
+        ))
+        if self._dev_id:
+            det = QLabel(f"✔  Deine GPU erkannt · DeviceID <b>{dev}</b>")
+            det.setStyleSheet(f"color:{FOREST}; font-size:9pt;")
+        else:
+            det = QLabel("DeviceID nicht erkannt — aus GPU-Z eintragen (Feld „Device ID“, Teil nach 10DE).")
+            det.setStyleSheet(f"color:{AMBER}; font-size:9pt;")
+        det.setTextFormat(Qt.TextFormat.RichText)
+        det.setWordWrap(True)
+        b2.addWidget(det)
+        b2.addWidget(self._cap('<b>a)</b>  „RTCore.cfg öffnen“ → im Abschnitt <b>[GPU_10DE]</b> einfügen:'))
+        self._snippet_row(b2, "", f"G1B2 = {dev}h")
+        row_a = QHBoxLayout()
+        row_a.setSpacing(8)
+        b_rt = QPushButton("RTCore.cfg öffnen")
+        b_rt.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_rt.clicked.connect(self._open_rtcore)
+        row_a.addWidget(b_rt)
+        row_a.addStretch()
+        b2.addLayout(row_a)
+        b2.addWidget(self._cap('<b>b)</b>  „Profil öffnen“ → im Abschnitt <b>[Settings]</b> einfügen:'))
+        self._snippet_row(b2, "", "LowLevelMonitoring = 0")
+        row_b = QHBoxLayout()
+        row_b.setSpacing(8)
+        b_pr = QPushButton("Profil öffnen")
+        b_pr.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_pr.clicked.connect(self._open_profiles)
+        row_b.addWidget(b_pr)
+        row_b.addStretch()
+        b2.addLayout(row_b)
+        warn = QLabel("⚠  Zeile (b) nicht vergessen — sonst zeigt Afterburner falsche Taktraten oder stürzt ab.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet(f"color:{AMBER}; font-size:8.5pt;")
+        b2.addWidget(warn)
+
+        # ── Step 3: enable the readout ──
+        b3 = self._make_step(lay, 3, "Anzeige einschalten", s3_done, s2_done and not s3_done)
+        b3.addWidget(self._lead(
+            "Afterburner starten → Einstellungen → Überwachung → "
+            "<b>„GPU hotspot temperature“</b> anhaken. Dann hier aktivieren:"
+        ))
+        self._chk = QCheckBox("  Hotspot in System Manager anzeigen")
         self._chk.setObjectName("hotspotToggle")
         self._chk.setChecked(bool(parent._af_enabled))
         self._chk.setCursor(Qt.CursorShape.PointingHandCursor)
         self._chk.toggled.connect(self._on_toggle)
         self._chk.setStyleSheet(f"""
             QCheckBox#hotspotToggle {{
-                background: {CARD};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-                padding: 12px 14px;
-                font-size: 10.5pt;
-                font-weight: 600;
-                color: {TEXT};
-                spacing: 10px;
+                background: {CARD}; border: 1px solid {BORDER}; border-radius: 8px;
+                padding: 12px 14px; font-size: 10.5pt; font-weight: 600;
+                color: {TEXT}; spacing: 10px;
             }}
-            QCheckBox#hotspotToggle:hover {{
-                background: {CARD_HI};
-                border-color: {ACCENT};
-            }}
+            QCheckBox#hotspotToggle:hover {{ background: {CARD_HI}; border-color: {ACCENT}; }}
             QCheckBox#hotspotToggle::indicator {{
-                width: 20px; height: 20px;
-                border-radius: 5px;
-                border: 2px solid {BORDER_HI};
-                background: transparent;
+                width: 20px; height: 20px; border-radius: 5px;
+                border: 2px solid {BORDER_HI}; background: transparent;
             }}
             QCheckBox#hotspotToggle::indicator:hover {{ border-color: {ACCENT}; }}
-            QCheckBox#hotspotToggle::indicator:checked {{
-                background: {ACCENT};
-                border-color: {ACCENT};
-            }}
+            QCheckBox#hotspotToggle::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
         """)
-        lay.addWidget(self._chk)
+        b3.addWidget(self._chk)
 
-        # one-click: install the bundled Hotspot.dll into Afterburner's plugin folder
-        if os.path.isfile(bundled_plugin_path()):
-            b_install = QPushButton("Plugin automatisch installieren")
-            b_install.setObjectName("btnAccent")
-            b_install.setCursor(Qt.CursorShape.PointingHandCursor)
-            b_install.clicked.connect(self._install_bundled)
-            lay.addWidget(b_install)
-            hint = QLabel(
-                "Kopiert das mitgelieferte Hotspot-Plugin in den Afterburner-Ordner. "
-                "MSI Afterburner davor bitte schließen. Für den echten Hotspot (nicht nur "
-                "Mem Junction) danach das RTCore-Unlock durchführen."
-            )
-            hint.setWordWrap(True)
-            hint.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
-            lay.addWidget(hint)
-
-        # one-time setup helpers
-        setup = QHBoxLayout()
-        setup.setSpacing(8)
-        b_folder = QPushButton("Plugin-Ordner öffnen")
-        b_folder.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_folder.clicked.connect(self._open_folder)
-        b_guide = QPushButton("Anleitung / Download")
-        b_guide.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_guide.clicked.connect(lambda: self._open(self._GUIDE_URL))
-        setup.addWidget(b_folder)
-        setup.addWidget(b_guide)
-        setup.addStretch()
-        lay.addLayout(setup)
-
-        # ── Unlock the real hotspot: auto-detect the DeviceID, show exact lines ──
-        self._dev_id = detect_nvidia_device_id()
-        usep = QFrame()
-        usep.setFrameShape(QFrame.Shape.HLine)
-        usep.setStyleSheet(f"background:{BORDER}; border:none; max-height:1px;")
-        lay.addWidget(usep)
-
-        uh = QLabel("Echten Hotspot freischalten (RTCore-Unlock)")
-        uh.setStyleSheet(f"color:{TEXT}; font-size:10pt; font-weight:700;")
-        lay.addWidget(uh)
-
-        dev = self._dev_id or "XXXX"
-        if self._dev_id:
-            det = QLabel(f"✔  NVIDIA-GPU erkannt · DeviceID <b>{dev}</b>")
-            det.setStyleSheet(f"color:{GREEN}; font-size:9pt;")
-        else:
-            det = QLabel("DeviceID nicht automatisch erkannt — aus GPU-Z eintragen "
-                         "(Feld „Device ID“, der Teil nach 10DE).")
-            det.setStyleSheet(f"color:{AMBER}; font-size:9pt;")
-        det.setTextFormat(Qt.TextFormat.RichText)
-        det.setWordWrap(True)
-        lay.addWidget(det)
-
-        info = QLabel("MSI Afterburner schließen, dann diese zwei Zeilen ergänzen:")
-        info.setWordWrap(True)
-        info.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
-        lay.addWidget(info)
-
-        self._snippet_row(lay, "1)  in  RTCore.cfg  →  Abschnitt  [GPU_10DE]", f"G1B2 = {dev}h")
-        self._snippet_row(lay, "2)  in  Profiles\\VEN_10DE&DEV_…cfg  →  [Settings]", "LowLevelMonitoring = 0")
-
-        ubtns = QHBoxLayout()
-        ubtns.setSpacing(8)
-        b_rt = QPushButton("RTCore.cfg öffnen")
-        b_rt.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_rt.clicked.connect(self._open_rtcore)
-        b_pr = QPushButton("Profile-Ordner öffnen")
-        b_pr.setCursor(Qt.CursorShape.PointingHandCursor)
-        b_pr.clicked.connect(self._open_profiles)
-        ubtns.addWidget(b_rt)
-        ubtns.addWidget(b_pr)
-        ubtns.addStretch()
-        lay.addLayout(ubtns)
-
-        warn = QLabel("⚠  Zeile 2 nicht vergessen — sonst zeigt Afterburner falsche Taktraten "
-                      "oder stürzt ab. Danach Afterburner starten und die neuen Sensoren anhaken.")
-        warn.setWordWrap(True)
-        warn.setStyleSheet(f"color:{AMBER}; font-size:8pt;")
-        lay.addWidget(warn)
-
-        # optional: download from a URL the user trusts
-        note = QLabel("Optional: DLL von einer URL laden, der du vertraust "
-                      "(landet direkt im Plugin-Ordner):")
+        # ── Advanced (collapsed): install the plugin from a URL the user trusts ──
+        adv = self._make_advanced(lay)
+        note = QLabel("DLL von einer URL laden, der du vertraust (landet im Plugin-Ordner):")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
-        lay.addWidget(note)
+        adv.addWidget(note)
         dl = QHBoxLayout()
         dl.setSpacing(8)
         self._url = QLineEdit()
@@ -2382,8 +2382,9 @@ class AfterburnerDialog(QDialog):
         b_dl.clicked.connect(self._download)
         dl.addWidget(self._url, 1)
         dl.addWidget(b_dl)
-        lay.addLayout(dl)
+        adv.addLayout(dl)
 
+        lay.addStretch()
         act = QHBoxLayout()
         act.addStretch()
         close = QPushButton("Schließen")
@@ -2391,6 +2392,90 @@ class AfterburnerDialog(QDialog):
         close.clicked.connect(self.accept)
         act.addWidget(close)
         lay.addLayout(act)
+
+    def _lead(self, html):
+        l = QLabel(html)
+        l.setTextFormat(Qt.TextFormat.RichText)
+        l.setWordWrap(True)
+        l.setStyleSheet(f"color:{TEXT}; font-size:9pt;")
+        return l
+
+    def _cap(self, html):
+        l = QLabel(html)
+        l.setTextFormat(Qt.TextFormat.RichText)
+        l.setWordWrap(True)
+        l.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
+        return l
+
+    def _make_step(self, lay, number, title, done, expanded):
+        """One numbered, collapsible step card. Returns its body layout to fill."""
+        frame = QFrame()
+        frame.setObjectName("stepCardDone" if done else "stepCard")
+        v = QVBoxLayout(frame)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        header = ClickableFrame()
+        header.setObjectName("stepHead")
+        header.setCursor(Qt.CursorShape.PointingHandCursor)
+        h = QHBoxLayout(header)
+        h.setContentsMargins(12, 10, 12, 10)
+        h.setSpacing(12)
+        num = QLabel("✓" if done else str(number))
+        num.setObjectName("stepNumDone" if done else "stepNum")
+        num.setFixedSize(26, 26)
+        num.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tl = QLabel(title)
+        tl.setStyleSheet("font-weight:700; font-size:10.5pt;")
+        state = QLabel("erledigt" if done else "offen")
+        state.setStyleSheet(f"color:{FOREST if done else SUBTEXT}; font-size:8.5pt;")
+        chev = QLabel("▴" if expanded else "▾")
+        chev.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
+        h.addWidget(num)
+        h.addWidget(tl)
+        h.addStretch()
+        h.addWidget(state)
+        h.addWidget(chev)
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(52, 0, 14, 14)
+        bl.setSpacing(8)
+        body.setVisible(expanded)
+
+        def _toggle():
+            body.setVisible(not body.isVisible())
+            chev.setText("▴" if body.isVisible() else "▾")
+        header.clicked.connect(_toggle)
+
+        v.addWidget(header)
+        v.addWidget(body)
+        lay.addWidget(frame)
+        return bl
+
+    def _make_advanced(self, lay):
+        head = ClickableFrame()
+        head.setCursor(Qt.CursorShape.PointingHandCursor)
+        hh = QHBoxLayout(head)
+        hh.setContentsMargins(2, 6, 2, 2)
+        lbl = QLabel("▸  Erweitert (Plugin von URL laden)")
+        lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
+        hh.addWidget(lbl)
+        hh.addStretch()
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 6, 0, 0)
+        bl.setSpacing(6)
+        body.setVisible(False)
+
+        def _toggle():
+            body.setVisible(not body.isVisible())
+            lbl.setText(("▾" if body.isVisible() else "▸") + "  Erweitert (Plugin von URL laden)")
+        head.clicked.connect(_toggle)
+
+        lay.addWidget(head)
+        lay.addWidget(body)
+        return bl
 
     def _on_toggle(self, on: bool):
         self._parent._af_enabled = on
@@ -2415,9 +2500,10 @@ class AfterburnerDialog(QDialog):
             )
 
     def _snippet_row(self, lay, caption, code):
-        cap = QLabel(caption)
-        cap.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
-        lay.addWidget(cap)
+        if caption:
+            cap = QLabel(caption)
+            cap.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
+            lay.addWidget(cap)
         row = QHBoxLayout()
         row.setSpacing(8)
         field = QLineEdit(code)
