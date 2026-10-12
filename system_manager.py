@@ -24,9 +24,14 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog, QCheckBox,
     QSplitter,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray, QEvent
+from PyQt6.QtCore import (
+    Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray, QEvent,
+    QPointF, QRectF, QVariantAnimation, QEasingCurve,
+)
+import time
+import collections
 from PyQt6.QtGui import (
-    QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen,
+    QIcon, QColor, QPixmap, QPainter, QBrush, QFont, QPen, QPainterPath,
 )
 
 # ── Windows API constants ──────────────────────────────────────────────────────
@@ -705,6 +710,15 @@ def bundled_plugin_path() -> str:
     """Path to the Hotspot.dll shipped inside the app bundle (or repo when dev)."""
     base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "plugin", "Hotspot.dll")
+
+
+def _uptime_text() -> str:
+    """System uptime as 'H h M m' (Windows GetTickCount64); '—' elsewhere."""
+    try:
+        secs = ctypes.windll.kernel32.GetTickCount64() // 1000
+        return f"{secs // 3600} h {(secs % 3600) // 60} m"
+    except Exception:
+        return "—"
 
 
 def afterburner_root() -> str:
@@ -1399,8 +1413,8 @@ QMainWindow, QDialog {{ background: {BG}; }}
 QWidget {{ color: {TEXT}; background: transparent; }}
 
 QFrame#statsChip {{
-    background: {CARD};
-    border-radius: 8px;
+    background: {CARD_HI};
+    border-radius: 12px;
     border: 1px solid {BORDER};
 }}
 QFrame#monitorCard {{
@@ -1528,7 +1542,8 @@ QTabBar::tab:hover:!selected {{
 
 
 # ── Tray icon (drawn with QPainter — no Pillow dependency) ─────────────────────
-def _make_tray_icon() -> QIcon:
+def _make_tray_icon(state: str = "") -> QIcon:
+    """Tray icon with a health dot: green (ok), amber (warn) or red (crit)."""
     px = QPixmap(64, 64)
     px.fill(QColor(0, 0, 0, 0))
     p = QPainter(px)
@@ -1545,44 +1560,220 @@ def _make_tray_icon() -> QIcon:
     p.drawRect(28, 46, 8, 8)
     # Stand base
     p.drawRoundedRect(18, 54, 28, 6, 3, 3)
+    # Health dot (bottom-right) with a dark ring so it reads on any tray background
+    dot = {"warn": AMBER, "crit": RED}.get(state, GREEN)
+    p.setBrush(QBrush(QColor(BG)))
+    p.drawEllipse(38, 38, 26, 26)
+    p.setBrush(QBrush(QColor(dot)))
+    p.drawEllipse(42, 42, 18, 18)
     p.end()
     return QIcon(px)
 
 
 # ── Stats chip widget ───────────────────────────────────────────────────────────
-class StatsChip(QFrame):
-    """Overview metric card: small label, a large tinted primary value (with a
-    muted unit), and a secondary detail line."""
+# Temperature thresholds (°C) for state colouring: (warn, crit)
+TH_CPU = (80, 90)
+TH_GPU = (80, 88)
+TH_HOT = (90, 100)
+STATE_COLOR = {"": None, "warn": AMBER, "crit": RED}
 
-    def __init__(self, label: str, value_color: str, parent=None):
+
+def _state_for(value, th) -> str:
+    if value is None:
+        return ""
+    warn, crit = th
+    return "crit" if value >= crit else "warn" if value >= warn else ""
+
+
+class IconLabel(QWidget):
+    """Small painted line icon (cpu/gpu/ram/bolt/pad/fan/mon). Drawn with
+    QPainter so no SVG module is needed at runtime."""
+
+    def __init__(self, name: str, color: str, size: int = 16, parent=None):
+        super().__init__(parent)
+        self._name, self._color, self._size = name, color, size
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def set_color(self, color: str):
+        self._color = color
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = self._size / 24.0
+        p.scale(s, s)
+        pen = QPen(QColor(self._color))
+        pen.setWidthF(1.7)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        n = self._name
+        if n == "cpu":
+            p.drawRoundedRect(QRectF(6, 6, 12, 12), 2, 2)
+            p.drawRoundedRect(QRectF(9.5, 9.5, 5, 5), 1, 1)
+            for x in (9, 15):
+                p.drawLine(QPointF(x, 2), QPointF(x, 6))
+                p.drawLine(QPointF(x, 18), QPointF(x, 22))
+            for y in (9, 15):
+                p.drawLine(QPointF(2, y), QPointF(6, y))
+                p.drawLine(QPointF(18, y), QPointF(22, y))
+        elif n == "gpu":
+            p.drawRoundedRect(QRectF(2.5, 6.5, 19, 11), 2, 2)
+            p.drawEllipse(QPointF(10, 12), 3, 3)
+            p.drawLine(QPointF(15.5, 10.5), QPointF(18.5, 10.5))
+            p.drawLine(QPointF(15.5, 13.5), QPointF(18.5, 13.5))
+            p.drawLine(QPointF(5, 17.5), QPointF(5, 20.5))
+            p.drawLine(QPointF(5, 20.5), QPointF(9, 20.5))
+        elif n == "ram":
+            p.drawRoundedRect(QRectF(2.5, 7.5, 19, 9), 1.5, 1.5)
+            for x in (6, 10, 14, 18):
+                p.drawLine(QPointF(x, 7.5), QPointF(x, 16.5))
+            p.drawLine(QPointF(4, 16.5), QPointF(4, 18.5))
+            p.drawLine(QPointF(20, 16.5), QPointF(20, 18.5))
+        elif n == "bolt":
+            path = QPainterPath(QPointF(13, 2))
+            for pt in ((4.5, 13.5), (11, 13.5), (10, 22), (19.5, 10.5), (13, 10.5)):
+                path.lineTo(QPointF(*pt))
+            path.closeSubpath()
+            p.drawPath(path)
+        elif n == "pad":
+            p.drawRoundedRect(QRectF(3, 8, 18, 9), 4.5, 4.5)
+            p.drawLine(QPointF(8, 10.8), QPointF(8, 14.2))
+            p.drawLine(QPointF(6.3, 12.5), QPointF(9.7, 12.5))
+            p.setBrush(QBrush(QColor(self._color)))
+            p.drawEllipse(QPointF(15.5, 11.3), 0.9, 0.9)
+            p.drawEllipse(QPointF(17.5, 13.7), 0.9, 0.9)
+        elif n == "fan":
+            p.drawEllipse(QPointF(12, 12), 2.2, 2.2)
+            for ang in (0, 120, 240):
+                p.save()
+                p.translate(12, 12)
+                p.rotate(ang)
+                blade = QPainterPath(QPointF(0, -3))
+                blade.cubicTo(QPointF(0, -7.5), QPointF(3, -9.5), QPointF(5, -8))
+                blade.cubicTo(QPointF(7, -6.5), QPointF(4, -3.2), QPointF(0, -3))
+                p.drawPath(blade)
+                p.restore()
+        elif n == "mon":
+            p.drawRoundedRect(QRectF(2.5, 4, 19, 12.5), 2, 2)
+            p.drawLine(QPointF(9, 20.5), QPointF(15, 20.5))
+            p.drawLine(QPointF(12, 16.5), QPointF(12, 20.5))
+        p.end()
+
+
+class Sparkline(QWidget):
+    """60-sample trend line with a soft fill and an endpoint dot."""
+
+    def __init__(self, color: str, maxlen: int = 60, parent=None):
+        super().__init__(parent)
+        self._color = QColor(color)
+        self._data = collections.deque(maxlen=maxlen)
+        self.setFixedHeight(26)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def push(self, v):
+        if v is None:
+            return
+        self._data.append(float(v))
+        self.update()
+
+    def paintEvent(self, event):
+        if len(self._data) < 2:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        d = list(self._data)
+        mn, mx = min(d) - 1.0, max(d) + 1.0
+        n = len(d)
+
+        def xs(i):
+            return i / (n - 1) * (w - 3)
+
+        def ys(v):
+            return h - 2 - ((v - mn) / (mx - mn)) * (h - 5)
+
+        line = QPainterPath(QPointF(xs(0), ys(d[0])))
+        for i in range(1, n):
+            line.lineTo(QPointF(xs(i), ys(d[i])))
+        fill = QPainterPath(line)
+        fill.lineTo(QPointF(xs(n - 1), h))
+        fill.lineTo(QPointF(0, h))
+        fill.closeSubpath()
+        fc = QColor(self._color)
+        fc.setAlpha(38)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(fc))
+        p.drawPath(fill)
+        pen = QPen(self._color)
+        pen.setWidthF(1.6)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(line)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(self._color))
+        p.drawEllipse(QPointF(xs(n - 1), ys(d[-1])), 2.2, 2.2)
+        p.end()
+
+
+class StatsChip(QFrame):
+    """Overview hero card: icon + label on top, a large tinted primary value
+    (animated between updates, tinted amber/red past thresholds) with a
+    secondary line centred, and a sparkline of the last 60 samples below."""
+
+    def __init__(self, label: str, value_color: str, icon: str = None, parent=None):
         super().__init__(parent)
         self.setObjectName("statsChip")
+        self._color = value_color
+        self._state = ""
+        self._shown = None
+        self._unit = ""
+        self._dec = 0
+        self._anim = None
+        tint = value_color if value_color != TEXT else SUBTEXT
+
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(15, 13, 15, 14)
+        lay.setContentsMargins(14, 11, 14, 9)
         lay.setSpacing(2)
 
+        top = QHBoxLayout()
+        top.setSpacing(7)
+        if icon:
+            top.addWidget(IconLabel(icon, tint, 15))
         name_lbl = QLabel(label.upper())
-        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         name_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 8pt; font-weight: 600;")
+        top.addWidget(name_lbl)
+        top.addStretch()
+        lay.addLayout(top)
 
+        lay.addStretch()
         self._val = QLabel("—")
         self._val.setTextFormat(Qt.TextFormat.RichText)
         self._val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._val.setStyleSheet(
-            f"color: {value_color}; font-size: 21pt; font-weight: 700;"
-        )
-
+        self._val.setStyleSheet(f"color: {value_color}; font-size: 21pt; font-weight: 700;")
         self._sub = QLabel("")
         self._sub.setTextFormat(Qt.TextFormat.RichText)
         self._sub.setWordWrap(True)
         self._sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sub.setStyleSheet(f"color: {SUBTEXT}; font-size: 8.5pt;")
-
-        lay.addStretch()
-        lay.addWidget(name_lbl)
         lay.addWidget(self._val)
         lay.addWidget(self._sub)
         lay.addStretch()
+
+        self.spark = Sparkline(tint)
+        lay.addWidget(self.spark)
+        # Tabular digits so the big number doesn't jitter (Qt >= 6.7; ignored otherwise)
+        try:
+            f = self._val.font()
+            f.setFeature(QFont.Tag("tnum"), 1)
+            self._val.setFont(f)
+        except Exception:
+            pass
 
     @staticmethod
     def fmt(value, unit: str) -> str:
@@ -1594,6 +1785,43 @@ class StatsChip(QFrame):
     def set_value(self, main: str, sub: str = ""):
         self._val.setText(main)
         self._sub.setText(sub)
+
+    def set_number(self, value, unit: str, decimals: int = 0, sub: str = None):
+        """Animate the big number towards `value` (None shows N/A)."""
+        if sub is not None:
+            self._sub.setText(sub)
+        self._unit, self._dec = unit, decimals
+        if value is None:
+            self._shown = None
+            self._val.setText(self.fmt(None, unit))
+            return
+        value = float(value)
+        if self._shown is None:
+            self._shown = value
+            self._val.setText(self.fmt(f"{value:.{decimals}f}", unit))
+            return
+        if self._anim is not None:
+            self._anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setDuration(450)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(float(self._shown))
+        anim.setEndValue(value)
+        anim.valueChanged.connect(self._on_anim)
+        self._anim = anim
+        anim.start()
+
+    def _on_anim(self, v):
+        self._shown = float(v)
+        self._val.setText(self.fmt(f"{self._shown:.{self._dec}f}", self._unit))
+
+    def set_state(self, state: str):
+        """'' | 'warn' | 'crit' — tints the big value amber/red past thresholds."""
+        if state == self._state:
+            return
+        self._state = state
+        col = STATE_COLOR.get(state) or self._color
+        self._val.setStyleSheet(f"color: {col}; font-size: 21pt; font-weight: 700;")
 
 
 # ── Monitor card widgets ────────────────────────────────────────────────────────
@@ -1795,12 +2023,36 @@ class RingGauge(QWidget):
         self._rpm = 0
         self._pct = None      # real PWM % from the paired control sensor, or None
         self._ref_max = ref_max
+        self._disp_pct = 0.0  # animated arc fill actually painted
+        self._disp_rpm = 0.0  # animated rpm actually painted
+        self._anim = None
         self.setFixedSize(74, 74)
+
+    def _target_pct(self) -> float:
+        if self._pct is not None:
+            return max(0.0, min(100.0, float(self._pct)))
+        return max(0.0, min(100.0, self._rpm / self._ref_max * 100)) if self._ref_max else 0.0
 
     def set_values(self, rpm: int, pct=None):
         self._rpm = rpm
         self._pct = pct
-        self.update()
+        target_pct, target_rpm = self._target_pct(), float(rpm)
+        start_pct, start_rpm = self._disp_pct, self._disp_rpm
+        if self._anim is not None:
+            self._anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setDuration(500)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+
+        def _step(t):
+            self._disp_pct = start_pct + (target_pct - start_pct) * t
+            self._disp_rpm = start_rpm + (target_rpm - start_rpm) * t
+            self.update()
+        anim.valueChanged.connect(_step)
+        self._anim = anim
+        anim.start()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1810,10 +2062,7 @@ class RingGauge(QWidget):
         rect = self.rect().adjusted(
             pen_w // 2 + 1, pen_w // 2 + 1, -(pen_w // 2 + 1), -(pen_w // 2 + 1)
         )
-        if self._pct is not None:
-            pct = max(0.0, min(100.0, float(self._pct)))
-        else:
-            pct = max(0.0, min(100.0, self._rpm / self._ref_max * 100)) if self._ref_max else 0.0
+        pct = max(0.0, min(100.0, float(self._disp_pct)))
 
         pen = QPen(QColor(BORDER))
         pen.setWidth(pen_w)
@@ -1838,7 +2087,7 @@ class RingGauge(QWidget):
         p.setFont(f)
         num_rect = QRect(inner.left(), inner.top() + 8, inner.width(), 18)
         # 0 is a real reading (fan stopped / zero-RPM idle), not missing data.
-        p.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, f"{self._rpm:,}")
+        p.drawText(num_rect, Qt.AlignmentFlag.AlignCenter, f"{int(round(self._disp_rpm)):,}")
 
         p.setPen(QColor(SUBTEXT))
         f2 = QFont()
@@ -1945,13 +2194,14 @@ class SensorCard(QFrame):
 
     _COLS = 4
 
-    def __init__(self, mono: str, name: str, static_labels=(), parent=None, accent: str = None):
+    def __init__(self, mono: str, name: str, static_labels=(), parent=None, accent: str = None, icon: str = None):
         super().__init__(parent)
         self.setObjectName("monitorCard")
         self._cells: dict = {}
         self._cell_count = 0
         acc = accent or ACCENT
         acc_dim = _darken(acc, 0.28)
+        self._icon_name = icon
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1967,6 +2217,8 @@ class SensorCard(QFrame):
         head.setContentsMargins(16, 12, 16, 12)
         head.setSpacing(10)
 
+        if icon:
+            head.addWidget(IconLabel(icon, acc, 13))
         mono_lbl = QLabel(mono)
         mono_lbl.setStyleSheet(
             f"color:{acc}; background:{acc_dim}; font-size:7.5pt; "
@@ -2638,6 +2890,9 @@ class MainWindow(QMainWindow):
         self._last_ab_hotspot = None
         self._splitters: list = []
         self._layout_unlocked = bool(self._settings.get("layout_unlocked", False))
+        self._health_state = None      # "" | "warn" | "crit" currently shown in header/tray
+        self._was_crit = False
+        self._last_alert = 0.0
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -2694,6 +2949,18 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size:15pt; font-weight:700;")
         hl.addWidget(title)
         hl.addStretch()
+        # Status strip: health dot · uptime · Afterburner link state
+        hl.setSpacing(14)
+        self._health_dot = QLabel()
+        self._health_dot.setFixedSize(10, 10)
+        hl.addWidget(self._health_dot)
+        self._uptime_lbl = QLabel("Laufzeit —")
+        self._uptime_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        hl.addWidget(self._uptime_lbl)
+        self._ab_lbl = QLabel("Afterburner –")
+        self._ab_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        hl.addWidget(self._ab_lbl)
+        self._set_health("")
         root.addWidget(hdr)
 
         sep1 = QFrame()
@@ -2702,19 +2969,27 @@ class MainWindow(QMainWindow):
         root.addWidget(sep1)
 
         # ── Metric cards (shown on the Overview tab, not an always-on strip) ─
-        self._chip_cpu  = StatsChip("CPU",        PEACH)
-        self._chip_gpu  = StatsChip("GPU",        BLUE)
-        self._chip_sys  = StatsChip("System",     AMBER)
-        self._chip_ctrl = StatsChip("Controller", TEXT)
+        self._chip_cpu  = StatsChip("CPU",        PEACH, icon="cpu")
+        self._chip_gpu  = StatsChip("GPU",        BLUE,  icon="gpu")
+        self._chip_sys  = StatsChip("System",     AMBER, icon="bolt")
+        self._chip_ctrl = StatsChip("Controller", TEXT,  icon="pad")
 
         # ── Tabs (Übersicht / System / Fans / Monitors) ─────────────────────
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
-        def _section_title(text):
+        def _section_title(text, icon=None):
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(6)
+            if icon:
+                h.addWidget(IconLabel(icon, SUBTEXT, 13))
             l = QLabel(text.upper())
             l.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt; font-weight:600;")
-            return l
+            h.addWidget(l)
+            h.addStretch()
+            return w
 
         # Overview / Übersicht — landing page: metric cards + summaries
         ov_scroll = QScrollArea()
@@ -2727,12 +3002,12 @@ class MainWindow(QMainWindow):
         ov_lay.setContentsMargins(16, 14, 16, 14)
         ov_lay.setSpacing(12)
 
-        def _section(title_text, content):
+        def _section(title_text, content, icon=None):
             w = QWidget()
             v = QVBoxLayout(w)
             v.setContentsMargins(0, 0, 0, 0)
             v.setSpacing(6)
-            v.addWidget(_section_title(title_text))
+            v.addWidget(_section_title(title_text, icon))
             v.addWidget(content)
             return w
 
@@ -2775,12 +3050,12 @@ class MainWindow(QMainWindow):
 
         ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections3")
         ov_split.addWidget(chips_holder)
-        ov_split.addWidget(_section("Cooling", cool_card))
-        ov_split.addWidget(_section("Displays", disp_card))
+        ov_split.addWidget(_section("Cooling", cool_card, "fan"))
+        ov_split.addWidget(_section("Displays", disp_card, "mon"))
         ov_split.setStretchFactor(0, 0)
         ov_split.setStretchFactor(1, 1)
         ov_split.setStretchFactor(2, 0)
-        ov_split.setSizes([132, 470, 120])
+        ov_split.setSizes([152, 450, 120])
         ov_lay.addWidget(ov_split)
         ov_scroll.setWidget(ov_content)
 
@@ -2795,13 +3070,13 @@ class MainWindow(QMainWindow):
         sensors_layout.setContentsMargins(16, 12, 16, 12)
         sensors_layout.setSpacing(10)
 
-        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"], accent=PEACH)
+        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"], accent=PEACH, icon="cpu")
         self._sensor_gpu = SensorCard(
             "GPU", "Graphics",
             ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
-            accent=BLUE,
+            accent=BLUE, icon="gpu",
         )
-        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"], accent=FOREST)
+        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"], accent=FOREST, icon="ram")
         self._sensor_mb  = SensorCard("MB", "Motherboard")
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
@@ -3052,6 +3327,38 @@ class MainWindow(QMainWindow):
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
 
+    # ── Health state: header dot + tray icon + rate-limited alert ──────────────
+    def _set_health(self, state: str):
+        if state == self._health_state:
+            return
+        self._health_state = state
+        col = {"warn": AMBER, "crit": RED}.get(state, GREEN)
+        self._health_dot.setStyleSheet(f"background:{col}; border-radius:5px;")
+        self._health_dot.setToolTip({"warn": "Warnung: Temperatur erhöht",
+                                     "crit": "Kritisch: Temperatur zu hoch"}.get(state, "Alles im grünen Bereich"))
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.setIcon(_make_tray_icon(state))
+
+    def _maybe_alert(self, worst: str, cpu_temp, gpu_temp, hot):
+        """Tray notification when a sensor first crosses into 'crit' (≥ 2 min apart)."""
+        is_crit = worst == "crit"
+        now = time.time()
+        if is_crit and not self._was_crit and (now - self._last_alert) > 120:
+            parts = []
+            if _state_for(hot, TH_HOT) == "crit":
+                parts.append(f"GPU Hotspot {hot:.0f} °C")
+            if _state_for(gpu_temp, TH_GPU) == "crit":
+                parts.append(f"GPU {gpu_temp:.0f} °C")
+            if _state_for(cpu_temp, TH_CPU) == "crit":
+                parts.append(f"CPU {cpu_temp:.0f} °C")
+            tray = getattr(self, "_tray", None)
+            if tray is not None and parts:
+                tray.showMessage("Temperatur kritisch", " · ".join(parts),
+                                 QSystemTrayIcon.MessageIcon.Warning, 5000)
+            self._last_alert = now
+        self._was_crit = is_crit
+
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self._show_window()
@@ -3101,32 +3408,47 @@ class MainWindow(QMainWindow):
                 parts.append(f"{power:.0f} W")
             return "  ·  ".join(parts)
 
-        self._chip_cpu.set_value(
-            StatsChip.fmt(f"{cpu_temp:.0f}" if cpu_temp is not None else None, "°C"),
-            _use_watt(cpu_load, cpu_power),
-        )
+        # CPU: animated big temp, tinted past thresholds, sparkline of the trend
+        cpu_state = _state_for(cpu_temp, TH_CPU)
+        self._chip_cpu.set_number(cpu_temp, "°C", 0, sub=_use_watt(cpu_load, cpu_power))
+        self._chip_cpu.set_state(cpu_state)
+        self._chip_cpu.spark.push(cpu_temp)
 
-        # GPU: big core temp, hotspot highlighted in magenta below, then usage · watt
+        # GPU: big core temp, hotspot below (magenta, amber/red past thresholds), usage · watt
         hot = self._overview_hotspot(gpu_temp, sensors)
+        gpu_state = _state_for(gpu_temp, TH_GPU)
+        hot_state = _state_for(hot, TH_HOT)
+        hot_col = STATE_COLOR.get(hot_state) or MAGENTA
         gpu_lines = []
         if hot is not None:
-            gpu_lines.append(f'<span style="color:{MAGENTA}; font-weight:700;">Hotspot {hot:.0f} °C</span>')
+            gpu_lines.append(f'<span style="color:{hot_col}; font-weight:700;">Hotspot {hot:.0f} °C</span>')
         uw = _use_watt(gpu_load, gpu_power)
         if uw:
             gpu_lines.append(uw)
-        self._chip_gpu.set_value(
-            StatsChip.fmt(f"{gpu_temp:.0f}" if gpu_temp is not None else None, "°C"),
-            "<br>".join(gpu_lines),
-        )
+        self._chip_gpu.set_number(gpu_temp, "°C", 0, sub="<br>".join(gpu_lines))
+        self._chip_gpu.set_state(gpu_state)
+        self._chip_gpu.spark.push(gpu_temp)
 
         pwr_parts = [p for p in (cpu_power, gpu_power) if p is not None]
-        self._chip_sys.set_value(
-            StatsChip.fmt(f"{sum(pwr_parts):.0f}" if pwr_parts else None, "W"),
-            f'<span style="color:{FOREST}; font-weight:600;">{ram_used:.1f}/{ram_total} GB RAM</span>',
+        total_w = sum(pwr_parts) if pwr_parts else None
+        self._chip_sys.set_number(
+            total_w, "W", 0,
+            sub=f'<span style="color:{FOREST}; font-weight:600;">{ram_used:.1f}/{ram_total} GB RAM</span>',
         )
+        self._chip_sys.spark.push(total_w)
 
         self._chip_ctrl.set_value(battery if battery else "—",
                                   "Xbox Wireless" if battery else "")
+
+        # Overall health → header dot + tray icon + (rate-limited) alert
+        states = (cpu_state, gpu_state, hot_state)
+        worst = "crit" if "crit" in states else "warn" if "warn" in states else ""
+        self._set_health(worst)
+        self._maybe_alert(worst, cpu_temp, gpu_temp, hot)
+        self._uptime_lbl.setText(f"Laufzeit {_uptime_text()}")
+        ab_ok = bool(sensors.get("ab_available"))
+        self._ab_lbl.setText("Afterburner ✔" if ab_ok else "Afterburner –")
+        self._ab_lbl.setStyleSheet(f"color:{FOREST if ab_ok else SUBTEXT}; font-size:9pt;")
         self._apply_hdr_color(hdr)
         self._update_fans(fans)
         self._update_cooling(fans)
@@ -3165,12 +3487,16 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(tile)
         v.setContentsMargins(14, 12, 14, 12)
         v.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(IconLabel("fan", SUBTEXT, 13))
         nl = QLabel(name)
         nl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt; font-weight:600;")
         nl.setWordWrap(True)
+        head.addWidget(nl, 1)
         pl = QLabel(f"{pct}%")
         pl.setStyleSheet(f"color:{ACCENT}; font-size:22pt; font-weight:700;")
-        v.addWidget(nl)
+        v.addLayout(head)
         v.addStretch()
         v.addWidget(pl)
         return tile, pl
