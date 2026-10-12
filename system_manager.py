@@ -2893,6 +2893,7 @@ class MainWindow(QMainWindow):
         self._health_state = None      # "" | "warn" | "crit" currently shown in header/tray
         self._was_crit = False
         self._last_alert = 0.0
+        self._alerts_enabled = bool(self._settings.get("alerts_enabled", True))
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -3264,6 +3265,10 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("GPU Hotspot (Afterburner)…", self._on_afterburner)
         m.addAction("Customize Design…", self._on_customize)
+        self._alerts_action = m.addAction("Warnungen bei kritischer Temperatur")
+        self._alerts_action.setCheckable(True)
+        self._alerts_action.setChecked(self._alerts_enabled)
+        self._alerts_action.triggered.connect(self._on_toggle_alerts)
         m.addSeparator()
 
         self._autostart_action = m.addAction("Start with Windows")
@@ -3340,11 +3345,17 @@ class MainWindow(QMainWindow):
         if tray is not None:
             tray.setIcon(_make_tray_icon(state))
 
+    def _on_toggle_alerts(self, on: bool):
+        self._alerts_enabled = bool(on)
+        self._settings["alerts_enabled"] = self._alerts_enabled
+        save_settings(self._settings)
+
     def _maybe_alert(self, worst: str, cpu_temp, gpu_temp, hot):
-        """Tray notification when a sensor first crosses into 'crit' (≥ 2 min apart)."""
+        """Tray notification when a sensor first crosses into 'crit' (≥ 2 min apart).
+        Can be switched off via Misc → 'Warnungen bei kritischer Temperatur'."""
         is_crit = worst == "crit"
         now = time.time()
-        if is_crit and not self._was_crit and (now - self._last_alert) > 120:
+        if self._alerts_enabled and is_crit and not self._was_crit and (now - self._last_alert) > 120:
             parts = []
             if _state_for(hot, TH_HOT) == "crit":
                 parts.append(f"GPU Hotspot {hot:.0f} °C")
