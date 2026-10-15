@@ -1092,7 +1092,7 @@ def set_default_audio_output(device_id: str) -> tuple:
 
 # ── Auto-update ────────────────────────────────────────────────────────────────
 _GITHUB_RELEASE_URL = (
-    "https://api.github.com/repos/maximilianermert-stack/system-manager"
+    "https://api.github.com/repos/maximilianermert-stack/monitor-manager"
     "/releases/tags/latest"
 )
 _DETACHED_PROCESS = 0x00000008
@@ -2873,6 +2873,7 @@ class AfterburnerDialog(QDialog):
 # ── Main window ─────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
     _temps_signal = pyqtSignal(tuple, tuple, object, bool)
+    _update_signal = pyqtSignal(str, str)   # (kind, payload) from the update worker thread
 
     def __init__(self):
         super().__init__()
@@ -2897,6 +2898,7 @@ class MainWindow(QMainWindow):
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
+        self._update_signal.connect(self._on_update_event)
 
         self._setup_ui()
         self._setup_tray()
@@ -3813,43 +3815,44 @@ class MainWindow(QMainWindow):
 
     def _on_check_update(self):
         self.setWindowTitle("System Manager  —  Checking for updates…")
+        self._misc_btn.setEnabled(False)            # no double-start while a check runs
         threading.Thread(target=self._do_update, daemon=True).start()
 
     def _do_update(self):
-        def on_progress(text):
-            QTimer.singleShot(0, lambda: self.setWindowTitle(
-                f"System Manager  —  Downloading update… {text}"
-            ))
+        """Worker thread. Never touches widgets — results go through
+        _update_signal, which Qt queues onto the GUI thread. (The previous
+        QTimer.singleShot-from-a-thread approach never fired: the worker has no
+        event loop, so the UI sat on 'Checking…' forever.)"""
+        emit = self._update_signal.emit
         # 1. Look at the latest release and skip the download if we already run it.
         try:
             release = _latest_release()
         except Exception as e:
-            QTimer.singleShot(0, lambda: (
-                self.setWindowTitle("System Manager"),
-                QMessageBox.critical(self, "Update Failed",
-                                     f"Couldn't check for updates:\n{e}"),
-            ))
+            emit("error", f"Couldn't check for updates:\n{e}")
             return
         if is_up_to_date(release):
-            QTimer.singleShot(0, lambda: (
-                self.setWindowTitle("System Manager"),
-                QMessageBox.information(self, "Up to date",
-                                        "You're already running the latest version."),
-            ))
+            emit("uptodate", "")
             return
-        # 2. A newer build exists — download and apply it.
-        ok, result = download_update(progress_cb=on_progress, release=release)
-        if ok:
-            QTimer.singleShot(0, lambda: self._finish_update(result))
-        else:
-            QTimer.singleShot(0, lambda: (
-                self.setWindowTitle("System Manager"),
-                QMessageBox.critical(self, "Update Failed",
-                                     result or "Could not download update."),
-            ))
+        # 2. A newer build exists — download, then hand the zip to the GUI thread.
+        ok, result = download_update(progress_cb=lambda t: emit("progress", t), release=release)
+        emit("done" if ok else "error", result or "Could not download update.")
+
+    def _on_update_event(self, kind: str, payload: str):
+        """GUI thread: show the worker's outcome."""
+        if kind == "progress":
+            self.setWindowTitle(f"System Manager  —  Downloading update… {payload}")
+            return
+        self.setWindowTitle("System Manager")
+        self._misc_btn.setEnabled(True)
+        if kind == "error":
+            QMessageBox.critical(self, "Update Failed", payload)
+        elif kind == "uptodate":
+            QMessageBox.information(self, "Up to date",
+                                    "You're already running the latest version.")
+        elif kind == "done":
+            self._finish_update(payload)
 
     def _finish_update(self, zip_path: str):
-        self.setWindowTitle("System Manager")
         QMessageBox.information(self, "Update",
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(zip_path)
