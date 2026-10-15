@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy, QLayout,
     QDialog, QLineEdit, QSystemTrayIcon, QMenu, QMessageBox, QInputDialog,
     QGraphicsDropShadowEffect, QTabWidget, QFileDialog, QColorDialog, QCheckBox,
-    QSplitter,
+    QSplitter, QSpinBox,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPoint, QRect, QSize, QByteArray, QEvent,
@@ -1571,11 +1571,24 @@ def _make_tray_icon(state: str = "") -> QIcon:
 
 
 # ── Stats chip widget ───────────────────────────────────────────────────────────
-# Temperature thresholds (°C) for state colouring: (warn, crit)
-TH_CPU = (80, 90)
-TH_GPU = (80, 88)
-TH_HOT = (90, 100)
+# Temperature thresholds (°C) for state colouring: key -> (warn, crit).
+# Defaults; the user can override them via Misc -> "Schwellen für Warnungen…"
+# (stored in settings.json under "thresholds").
+DEFAULT_TH = {"cpu": (80, 90), "gpu": (80, 88), "hot": (90, 100)}
 STATE_COLOR = {"": None, "warn": AMBER, "crit": RED}
+
+
+def _load_thresholds(settings: dict) -> dict:
+    th = dict(DEFAULT_TH)
+    raw = (settings or {}).get("thresholds") or {}
+    for key in th:
+        try:
+            warn, crit = int(raw[key][0]), int(raw[key][1])
+            if 30 <= warn < crit <= 150:
+                th[key] = (warn, crit)
+        except Exception:
+            pass
+    return th
 
 
 def _state_for(value, th) -> str:
@@ -2871,6 +2884,96 @@ class AfterburnerDialog(QDialog):
 
 
 # ── Main window ─────────────────────────────────────────────────────────────────
+class ThresholdDialog(QDialog):
+    """Per-sensor warn/crit temperatures (°C) that drive the value colours,
+    the health dot/tray icon and the critical-temperature notification."""
+
+    _ROWS = (("cpu", "CPU"), ("gpu", "GPU (Core)"), ("hot", "GPU Hotspot"))
+
+    def __init__(self, parent, th: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Schwellen für Warnungen")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 18)
+        lay.setSpacing(12)
+
+        title = QLabel("Schwellen für Warnungen")
+        title.setStyleSheet("font-size:13pt; font-weight:700;")
+        lay.addWidget(title)
+        sub = QLabel("Ab <b>Warnung</b> wird der Wert bernstein, ab <b>Kritisch</b> rot — "
+                     "dann wechseln auch Gesundheitspunkt und Tray-Icon, und es kommt "
+                     "eine Benachrichtigung (falls aktiviert).")
+        sub.setTextFormat(Qt.TextFormat.RichText)
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
+        lay.addWidget(sub)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+        for c, text in enumerate(("Sensor", "Warnung (°C)", "Kritisch (°C)")):
+            h = QLabel(text)
+            h.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt; font-weight:600;")
+            grid.addWidget(h, 0, c)
+        self._spins = {}
+        for r, (key, name) in enumerate(self._ROWS, start=1):
+            lbl = QLabel(name)
+            lbl.setStyleSheet("font-weight:600;")
+            warn = QSpinBox()
+            warn.setRange(30, 149)
+            warn.setSuffix(" °C")
+            crit = QSpinBox()
+            crit.setRange(31, 150)
+            crit.setSuffix(" °C")
+            w0, c0 = th.get(key, DEFAULT_TH[key])
+            warn.setValue(int(w0))
+            crit.setValue(int(c0))
+            grid.addWidget(lbl, r, 0)
+            grid.addWidget(warn, r, 1)
+            grid.addWidget(crit, r, 2)
+            self._spins[key] = (warn, crit)
+        grid.setColumnStretch(0, 1)
+        lay.addLayout(grid)
+
+        note = QLabel("Warnung muss unter Kritisch liegen — wird beim Speichern automatisch korrigiert.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{AMBER}; font-size:8pt;")
+        lay.addWidget(note)
+
+        act = QHBoxLayout()
+        b_def = QPushButton("Standard")
+        b_def.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_def.clicked.connect(self._reset)
+        act.addWidget(b_def)
+        act.addStretch()
+        b_cancel = QPushButton("Abbrechen")
+        b_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_cancel.clicked.connect(self.reject)
+        b_save = QPushButton("Speichern")
+        b_save.setObjectName("btnAccent")
+        b_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        b_save.clicked.connect(self.accept)
+        act.addWidget(b_cancel)
+        act.addWidget(b_save)
+        lay.addLayout(act)
+
+    def _reset(self):
+        for key, (warn, crit) in self._spins.items():
+            warn.setValue(DEFAULT_TH[key][0])
+            crit.setValue(DEFAULT_TH[key][1])
+
+    def result_thresholds(self) -> dict:
+        out = {}
+        for key, (warn, crit) in self._spins.items():
+            w, c = warn.value(), crit.value()
+            if w >= c:
+                w = c - 1
+            out[key] = (w, c)
+        return out
+
+
 class MainWindow(QMainWindow):
     _temps_signal = pyqtSignal(tuple, tuple, object, bool)
     _update_signal = pyqtSignal(str, str)   # (kind, payload) from the update worker thread
@@ -2895,6 +2998,7 @@ class MainWindow(QMainWindow):
         self._was_crit = False
         self._last_alert = 0.0
         self._alerts_enabled = bool(self._settings.get("alerts_enabled", True))
+        self._th = _load_thresholds(self._settings)
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -3271,6 +3375,7 @@ class MainWindow(QMainWindow):
         self._alerts_action.setCheckable(True)
         self._alerts_action.setChecked(self._alerts_enabled)
         self._alerts_action.triggered.connect(self._on_toggle_alerts)
+        m.addAction("Schwellen für Warnungen…", self._on_thresholds)
         m.addSeparator()
 
         self._autostart_action = m.addAction("Start with Windows")
@@ -3359,11 +3464,11 @@ class MainWindow(QMainWindow):
         now = time.time()
         if self._alerts_enabled and is_crit and not self._was_crit and (now - self._last_alert) > 120:
             parts = []
-            if _state_for(hot, TH_HOT) == "crit":
+            if _state_for(hot, self._th["hot"]) == "crit":
                 parts.append(f"GPU Hotspot {hot:.0f} °C")
-            if _state_for(gpu_temp, TH_GPU) == "crit":
+            if _state_for(gpu_temp, self._th["gpu"]) == "crit":
                 parts.append(f"GPU {gpu_temp:.0f} °C")
-            if _state_for(cpu_temp, TH_CPU) == "crit":
+            if _state_for(cpu_temp, self._th["cpu"]) == "crit":
                 parts.append(f"CPU {cpu_temp:.0f} °C")
             tray = getattr(self, "_tray", None)
             if tray is not None and parts:
@@ -3422,15 +3527,15 @@ class MainWindow(QMainWindow):
             return "  ·  ".join(parts)
 
         # CPU: animated big temp, tinted past thresholds, sparkline of the trend
-        cpu_state = _state_for(cpu_temp, TH_CPU)
+        cpu_state = _state_for(cpu_temp, self._th["cpu"])
         self._chip_cpu.set_number(cpu_temp, "°C", 0, sub=_use_watt(cpu_load, cpu_power))
         self._chip_cpu.set_state(cpu_state)
         self._chip_cpu.spark.push(cpu_temp)
 
         # GPU: big core temp, hotspot below (magenta, amber/red past thresholds), usage · watt
         hot = self._overview_hotspot(gpu_temp, sensors)
-        gpu_state = _state_for(gpu_temp, TH_GPU)
-        hot_state = _state_for(hot, TH_HOT)
+        gpu_state = _state_for(gpu_temp, self._th["gpu"])
+        hot_state = _state_for(hot, self._th["hot"])
         hot_col = STATE_COLOR.get(hot_state) or MAGENTA
         gpu_lines = []
         if hot is not None:
@@ -3458,6 +3563,17 @@ class MainWindow(QMainWindow):
         worst = "crit" if "crit" in states else "warn" if "warn" in states else ""
         self._set_health(worst)
         self._maybe_alert(worst, cpu_temp, gpu_temp, hot)
+        # Tray tooltip with live values (hover the tray icon)
+        tip = []
+        if cpu_temp is not None:
+            tip.append(f"CPU {cpu_temp:.0f} °C")
+        if gpu_temp is not None:
+            tip.append(f"GPU {gpu_temp:.0f} °C")
+        if hot is not None:
+            tip.append(f"Hotspot {hot:.0f} °C")
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            tray.setToolTip("System Manager" + ("\n" + "  ·  ".join(tip) if tip else ""))
         self._uptime_lbl.setText(f"Laufzeit {_uptime_text()}")
         ab_ok = bool(sensors.get("ab_available"))
         self._ab_lbl.setText("Afterburner ✔" if ab_ok else "Afterburner –")
@@ -3857,6 +3973,16 @@ class MainWindow(QMainWindow):
                                 "Update downloaded!\nThe app will now restart.")
         apply_update(zip_path)
         self._quit()
+
+    def _on_thresholds(self):
+        dlg = ThresholdDialog(self, self._th)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._th = dlg.result_thresholds()
+            self._settings["thresholds"] = {k: list(v) for k, v in self._th.items()}
+            save_settings(self._settings)
+            # Re-evaluate colours/health on the next poll; reset alert edge so a
+            # now-critical value can notify once under the new limits.
+            self._was_crit = False
 
     def _on_afterburner(self):
         AfterburnerDialog(self, self._last_ab_available, self._last_ab_hotspot).exec()
