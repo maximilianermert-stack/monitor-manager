@@ -700,6 +700,268 @@ def save_settings(d: dict):
         json.dump(d, f, indent=2)
 
 
+# ── i18n ───────────────────────────────────────────────────────────────────────
+# English is the source language in code. tr(s) returns the translation for the
+# active language (settings.json "language": en/de/es/fr) or s itself. The
+# language is read once at startup; changing it (Misc → Language) restarts the app.
+LANGS = {"en": "English", "de": "Deutsch", "es": "Español", "fr": "Français"}
+_LANG = str((load_settings() or {}).get("language") or "en").lower()
+if _LANG not in LANGS:
+    _LANG = "en"
+
+_TR = {
+"de": {
+    # tabs / bottom bar / header
+    "Overview": "Übersicht", "Fans": "Lüfter", "Monitors": "Monitore",
+    "Turn Off All": "Alle ausschalten", "Screensaver": "Bildschirmschoner",
+    "Misc  ▾": "Mehr  ▾", "↻  Refresh": "↻  Aktualisieren",
+    "🔓  Layout unlocked": "🔓  Layout entsperrt", "🔒  Layout": "🔒  Layout",
+    "Uptime": "Laufzeit",
+    # misc menu
+    "Extend displays": "Anzeigen erweitern", "Duplicate displays": "Anzeigen duplizieren",
+    "PC screen only": "Nur PC-Bildschirm", "Second screen only": "Nur zweiter Bildschirm",
+    "Refresh Rate": "Bildwiederholrate", "RTSS FPS Cap…": "RTSS FPS-Limit…",
+    "Sound Output": "Audioausgabe", "Snipping Tool": "Snipping Tool",
+    "Open Display Settings": "Anzeigeeinstellungen öffnen",
+    "GPU Hotspot (Afterburner)…": "GPU-Hotspot (Afterburner)…",
+    "Customize Design…": "Design anpassen…",
+    "Alerts on critical temperature": "Warnungen bei kritischer Temperatur",
+    "Alert thresholds…": "Schwellen für Warnungen…", "Language": "Sprache",
+    "Start with Windows": "Mit Windows starten", "Save Debug Info…": "Debug-Info speichern…",
+    "Check for Updates": "Nach Updates suchen", "Custom…": "Benutzerdefiniert…",
+    "No devices found": "Keine Geräte gefunden",
+    "Show System Manager": "System Manager anzeigen", "Exit": "Beenden",
+    # health / alerts
+    "Warning: temperature elevated": "Warnung: Temperatur erhöht",
+    "Critical: temperature too high": "Kritisch: Temperatur zu hoch",
+    "All good": "Alles im grünen Bereich", "Temperature critical": "Temperatur kritisch",
+    # sections / chips / cards
+    "Cooling": "Kühlung", "Displays": "Anzeigen", "System": "System", "Controller": "Controller",
+    "Processor": "Prozessor", "Graphics": "Grafik", "Memory": "Arbeitsspeicher", "Motherboard": "Mainboard",
+    # monitors / fans
+    "No display detected": "keine Anzeige erkannt", "No monitors detected.": "Keine Monitore erkannt.",
+    "Make Primary": "Als Hauptanzeige", "Disable": "Deaktivieren", "Enable": "Aktivieren", "Disabled": "Deaktiviert",
+    "Double-click to rename": "Doppelklick zum Umbenennen", "Rename Fan": "Lüfter umbenennen", "Fan name:": "Lüftername:",
+    # thresholds dialog
+    "Alert thresholds": "Schwellen für Warnungen",
+    "Above <b>Warning</b> the value turns amber, above <b>Critical</b> red — the health dot and tray icon change too, and a notification is sent (if enabled).":
+        "Ab <b>Warnung</b> wird der Wert bernstein, ab <b>Kritisch</b> rot — dann wechseln auch Gesundheitspunkt und Tray-Icon, und es kommt eine Benachrichtigung (falls aktiviert).",
+    "Sensor": "Sensor", "Warning (°C)": "Warnung (°C)", "Critical (°C)": "Kritisch (°C)",
+    "GPU (Core)": "GPU (Kern)", "GPU Hotspot": "GPU-Hotspot",
+    "Warning must be below Critical — corrected automatically on save.": "Warnung muss unter Kritisch liegen — wird beim Speichern automatisch korrigiert.",
+    "Default": "Standard", "Cancel": "Abbrechen", "Save": "Speichern", "Save & Restart": "Speichern & Neustart",
+    # theme / rtss
+    "Customize Design": "Design anpassen", "Primary…": "Primärfarbe…", "Secondary…": "Sekundärfarbe…",
+    "RTSS FPS Cap": "RTSS FPS-Limit", "Global FPS Cap": "Globales FPS-Limit", "Custom:": "Eigener Wert:", "Set": "Setzen",
+    # updates
+    "System Manager  —  Checking for updates…": "System Manager  —  Suche nach Updates…",
+    "System Manager  —  Downloading update…": "System Manager  —  Lade Update…",
+    "Update Failed": "Update fehlgeschlagen", "Couldn't check for updates:": "Updates konnten nicht geprüft werden:",
+    "Up to date": "Aktuell", "You're already running the latest version.": "Du nutzt bereits die neueste Version.",
+    "Update": "Update", "Update downloaded!\nThe app will now restart.": "Update geladen!\nDie App startet jetzt neu.",
+    # afterburner wizard
+    "Set up GPU Hotspot": "GPU-Hotspot einrichten",
+    "The real hotspot temperature of your RTX 50 is locked by NVIDIA. Via MSI Afterburner we get it in 3 steps — we only <b>read</b> values, nothing on the card is changed.":
+        "Die echte Hotspot-Temperatur deiner RTX 50 ist von NVIDIA gesperrt. Über MSI Afterburner holen wir sie in 3 Schritten — wir <b>lesen</b> dabei nur Werte, es wird nichts an der Karte verändert.",
+    "●  Not set up yet · Step 1 of 3": "●  Noch nicht eingerichtet · Schritt 1 von 3",
+    "●  Step 2 of 3 — Unlock hotspot": "●  Schritt 2 von 3 — Hotspot freischalten",
+    "●  Step 3 of 3 — Enable display": "●  Schritt 3 von 3 — Anzeige einschalten",
+    "✔  Hotspot active": "✔  Hotspot aktiv",
+    "Install plugin": "Plugin installieren", "Unlock hotspot": "Hotspot freischalten", "Enable display": "Anzeige einschalten",
+    "done": "erledigt", "open": "offen",
+    "The hotspot plugin is installed and detected.": "Das Hotspot-Plugin ist installiert und wird erkannt.",
+    "Load the small hotspot plugin to where Afterburner finds it. One click is enough — <b>close MSI Afterburner first</b>.":
+        "Lade das kleine Hotspot-Plugin dorthin, wo Afterburner es findet. Ein Klick genügt — <b>MSI Afterburner vorher schließen</b>.",
+    "Reinstall plugin": "Plugin neu installieren", "Install plugin automatically": "Plugin automatisch installieren",
+    "Open plugin folder": "Plugin-Ordner öffnen", "Guide": "Anleitung",
+    "One-time: add two lines to Afterburner's config. <b>Close Afterburner first</b> (also in the tray).":
+        "Einmalig: zwei Zeilen in Afterburners Konfig ergänzen. <b>Afterburner vorher schließen</b> (auch im Infobereich).",
+    "✔  Your GPU detected · DeviceID": "✔  Deine GPU erkannt · DeviceID",
+    "DeviceID not detected — enter it from GPU-Z (field “Device ID”, part after 10DE).":
+        "DeviceID nicht erkannt — aus GPU-Z eintragen (Feld „Device ID“, Teil nach 10DE).",
+    "<b>a)</b>  “Open RTCore.cfg” → insert in section <b>[GPU_10DE]</b>:": "<b>a)</b>  „RTCore.cfg öffnen“ → im Abschnitt <b>[GPU_10DE]</b> einfügen:",
+    "<b>b)</b>  “Open profile” → insert in section <b>[Settings]</b>:": "<b>b)</b>  „Profil öffnen“ → im Abschnitt <b>[Settings]</b> einfügen:",
+    "Open RTCore.cfg": "RTCore.cfg öffnen", "Open profile": "Profil öffnen",
+    "⚠  Don't forget line (b) — otherwise Afterburner shows wrong clocks or crashes.": "⚠  Zeile (b) nicht vergessen — sonst zeigt Afterburner falsche Taktraten oder stürzt ab.",
+    "Start Afterburner → Settings → Monitoring → tick <b>“GPU hotspot temperature”</b>. Then enable here:":
+        "Afterburner starten → Einstellungen → Überwachung → <b>„GPU hotspot temperature“</b> anhaken. Dann hier aktivieren:",
+    "  Show hotspot in System Manager": "  Hotspot in System Manager anzeigen",
+    "Advanced (load plugin from URL)": "Erweitert (Plugin von URL laden)",
+    "Load the DLL from a URL you trust (goes into the plugin folder):": "DLL von einer URL laden, der du vertraust (landet im Plugin-Ordner):",
+    "Load & install": "Laden & installieren", "Close": "Schließen", "Copy": "Kopieren", "Copied ✓": "Kopiert ✓",
+    # afterburner messages / misc
+    "Primary": "Primär",
+    "Plugin folder not found:": "Plugin-Ordner nicht gefunden:", "Is MSI Afterburner installed?": "Ist MSI Afterburner installiert?",
+    "RTCore.cfg not found:": "RTCore.cfg nicht gefunden:", "Profiles folder not found:": "Profile-Ordner nicht gefunden:",
+    "Bundled plugin not found.": "Mitgeliefertes Plugin nicht gefunden.",
+    "Couldn't write the DLL — MSI Afterburner is probably still running and has the plugin loaded.\n\nPlease close Afterburner completely (also in the tray) and click “Install plugin automatically” again.":
+        "Konnte die DLL nicht schreiben — vermutlich läuft MSI Afterburner noch und hat das Plugin geladen.\n\nBitte Afterburner komplett beenden (auch im Infobereich) und dann erneut auf „Plugin automatisch installieren“ klicken.",
+    "Installation failed:": "Installation fehlgeschlagen:",
+    "Plugin installed.\n\n1. Start MSI Afterburner\n2. Settings → Monitoring → enable the new sensors\n   (“GPU memory junction temperature” works right away)\n3. For the real hotspot, also do the RTCore unlock\n\nSystem Manager will pick up the values automatically.":
+        "Plugin installiert.\n\n1. MSI Afterburner starten\n2. Einstellungen → Überwachung → die neuen Sensoren aktivieren\n   („GPU memory junction temperature“ geht sofort)\n3. Für den echten Hotspot zusätzlich das RTCore-Unlock durchführen\n\nSystem Manager liest die Werte danach automatisch mit.",
+    "Please enter a valid http(s) URL.": "Bitte eine gültige http(s)-URL angeben.",
+    "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
+        "DLL installiert.\n\nStarte MSI Afterburner neu und aktiviere das Plugin unter Einstellungen → Überwachung. Danach erkennt System Manager den Hotspot automatisch.",
+    "Download failed:": "Download fehlgeschlagen:",
+},
+"es": {
+    "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
+    "Turn Off All": "Apagar todo", "Screensaver": "Salvapantallas",
+    "Misc  ▾": "Más  ▾", "↻  Refresh": "↻  Actualizar",
+    "🔓  Layout unlocked": "🔓  Diseño desbloqueado", "🔒  Layout": "🔒  Diseño", "Uptime": "Tiempo activo",
+    "Extend displays": "Extender pantallas", "Duplicate displays": "Duplicar pantallas",
+    "PC screen only": "Solo pantalla del PC", "Second screen only": "Solo segunda pantalla",
+    "Refresh Rate": "Frecuencia de actualización", "RTSS FPS Cap…": "Límite de FPS RTSS…",
+    "Sound Output": "Salida de audio", "Snipping Tool": "Recortes", "Open Display Settings": "Abrir ajustes de pantalla",
+    "GPU Hotspot (Afterburner)…": "Hotspot de GPU (Afterburner)…", "Customize Design…": "Personalizar diseño…",
+    "Alerts on critical temperature": "Alertas de temperatura crítica", "Alert thresholds…": "Umbrales de alerta…",
+    "Language": "Idioma", "Start with Windows": "Iniciar con Windows", "Save Debug Info…": "Guardar información de depuración…",
+    "Check for Updates": "Buscar actualizaciones", "Custom…": "Personalizado…", "No devices found": "No se encontraron dispositivos",
+    "Show System Manager": "Mostrar System Manager", "Exit": "Salir",
+    "Warning: temperature elevated": "Aviso: temperatura elevada", "Critical: temperature too high": "Crítico: temperatura demasiado alta",
+    "All good": "Todo en orden", "Temperature critical": "Temperatura crítica",
+    "Cooling": "Refrigeración", "Displays": "Pantallas", "System": "Sistema", "Controller": "Mando",
+    "Processor": "Procesador", "Graphics": "Gráficos", "Memory": "Memoria", "Motherboard": "Placa base",
+    "No display detected": "ninguna pantalla detectada", "No monitors detected.": "No se detectaron monitores.",
+    "Make Primary": "Hacer principal", "Disable": "Desactivar", "Enable": "Activar", "Disabled": "Desactivado",
+    "Double-click to rename": "Doble clic para renombrar", "Rename Fan": "Renombrar ventilador", "Fan name:": "Nombre del ventilador:",
+    "Alert thresholds": "Umbrales de alerta",
+    "Above <b>Warning</b> the value turns amber, above <b>Critical</b> red — the health dot and tray icon change too, and a notification is sent (if enabled).":
+        "A partir de <b>Aviso</b> el valor se vuelve ámbar; a partir de <b>Crítico</b>, rojo — también cambian el punto de estado y el icono de la bandeja, y se envía una notificación (si está activada).",
+    "Sensor": "Sensor", "Warning (°C)": "Aviso (°C)", "Critical (°C)": "Crítico (°C)", "GPU (Core)": "GPU (núcleo)", "GPU Hotspot": "Hotspot de GPU",
+    "Warning must be below Critical — corrected automatically on save.": "Aviso debe ser menor que Crítico — se corrige automáticamente al guardar.",
+    "Default": "Predeterminado", "Cancel": "Cancelar", "Save": "Guardar", "Save & Restart": "Guardar y reiniciar",
+    "Customize Design": "Personalizar diseño", "Primary…": "Color primario…", "Secondary…": "Color secundario…",
+    "RTSS FPS Cap": "Límite de FPS RTSS", "Global FPS Cap": "Límite global de FPS", "Custom:": "Personalizado:", "Set": "Aplicar",
+    "System Manager  —  Checking for updates…": "System Manager  —  Buscando actualizaciones…",
+    "System Manager  —  Downloading update…": "System Manager  —  Descargando actualización…",
+    "Update Failed": "Error de actualización", "Couldn't check for updates:": "No se pudieron comprobar las actualizaciones:",
+    "Up to date": "Actualizado", "You're already running the latest version.": "Ya tienes la última versión.",
+    "Update": "Actualización", "Update downloaded!\nThe app will now restart.": "¡Actualización descargada!\nLa aplicación se reiniciará ahora.",
+    "Set up GPU Hotspot": "Configurar hotspot de GPU",
+    "The real hotspot temperature of your RTX 50 is locked by NVIDIA. Via MSI Afterburner we get it in 3 steps — we only <b>read</b> values, nothing on the card is changed.":
+        "NVIDIA bloquea la temperatura real del hotspot de tu RTX 50. Con MSI Afterburner la obtenemos en 3 pasos — solo <b>leemos</b> valores, no se cambia nada en la tarjeta.",
+    "●  Not set up yet · Step 1 of 3": "●  Sin configurar · Paso 1 de 3", "●  Step 2 of 3 — Unlock hotspot": "●  Paso 2 de 3 — Desbloquear hotspot",
+    "●  Step 3 of 3 — Enable display": "●  Paso 3 de 3 — Activar visualización", "✔  Hotspot active": "✔  Hotspot activo",
+    "Install plugin": "Instalar plugin", "Unlock hotspot": "Desbloquear hotspot", "Enable display": "Activar visualización",
+    "done": "hecho", "open": "pendiente",
+    "The hotspot plugin is installed and detected.": "El plugin de hotspot está instalado y detectado.",
+    "Load the small hotspot plugin to where Afterburner finds it. One click is enough — <b>close MSI Afterburner first</b>.":
+        "Copia el pequeño plugin de hotspot donde Afterburner lo encuentre. Basta un clic — <b>cierra MSI Afterburner antes</b>.",
+    "Reinstall plugin": "Reinstalar plugin", "Install plugin automatically": "Instalar plugin automáticamente",
+    "Open plugin folder": "Abrir carpeta de plugins", "Guide": "Guía",
+    "One-time: add two lines to Afterburner's config. <b>Close Afterburner first</b> (also in the tray).":
+        "Una sola vez: añade dos líneas a la configuración de Afterburner. <b>Cierra Afterburner antes</b> (también en la bandeja).",
+    "✔  Your GPU detected · DeviceID": "✔  GPU detectada · DeviceID",
+    "DeviceID not detected — enter it from GPU-Z (field “Device ID”, part after 10DE).": "DeviceID no detectado — introdúcelo desde GPU-Z (campo “Device ID”, parte tras 10DE).",
+    "<b>a)</b>  “Open RTCore.cfg” → insert in section <b>[GPU_10DE]</b>:": "<b>a)</b>  “Abrir RTCore.cfg” → insertar en la sección <b>[GPU_10DE]</b>:",
+    "<b>b)</b>  “Open profile” → insert in section <b>[Settings]</b>:": "<b>b)</b>  “Abrir perfil” → insertar en la sección <b>[Settings]</b>:",
+    "Open RTCore.cfg": "Abrir RTCore.cfg", "Open profile": "Abrir perfil",
+    "⚠  Don't forget line (b) — otherwise Afterburner shows wrong clocks or crashes.": "⚠  No olvides la línea (b) — si no, Afterburner muestra frecuencias erróneas o se cierra.",
+    "Start Afterburner → Settings → Monitoring → tick <b>“GPU hotspot temperature”</b>. Then enable here:":
+        "Inicia Afterburner → Ajustes → Monitorización → marca <b>“GPU hotspot temperature”</b>. Luego actívalo aquí:",
+    "  Show hotspot in System Manager": "  Mostrar hotspot en System Manager",
+    "Advanced (load plugin from URL)": "Avanzado (cargar plugin desde URL)",
+    "Load the DLL from a URL you trust (goes into the plugin folder):": "Carga la DLL desde una URL de confianza (va a la carpeta de plugins):",
+    "Load & install": "Descargar e instalar", "Close": "Cerrar", "Copy": "Copiar", "Copied ✓": "Copiado ✓",
+    "Primary": "Principal",
+    "Plugin folder not found:": "Carpeta de plugins no encontrada:", "Is MSI Afterburner installed?": "¿Está instalado MSI Afterburner?",
+    "RTCore.cfg not found:": "RTCore.cfg no encontrado:", "Profiles folder not found:": "Carpeta de perfiles no encontrada:",
+    "Bundled plugin not found.": "Plugin incluido no encontrado.",
+    "Couldn't write the DLL — MSI Afterburner is probably still running and has the plugin loaded.\n\nPlease close Afterburner completely (also in the tray) and click “Install plugin automatically” again.":
+        "No se pudo escribir la DLL — probablemente MSI Afterburner sigue abierto y tiene el plugin cargado.\n\nCierra Afterburner por completo (también en la bandeja) y pulsa de nuevo “Instalar plugin automáticamente”.",
+    "Installation failed:": "La instalación falló:",
+    "Plugin installed.\n\n1. Start MSI Afterburner\n2. Settings → Monitoring → enable the new sensors\n   (“GPU memory junction temperature” works right away)\n3. For the real hotspot, also do the RTCore unlock\n\nSystem Manager will pick up the values automatically.":
+        "Plugin instalado.\n\n1. Inicia MSI Afterburner\n2. Ajustes → Monitorización → activa los nuevos sensores\n   (“GPU memory junction temperature” funciona de inmediato)\n3. Para el hotspot real, haz también el desbloqueo RTCore\n\nSystem Manager leerá los valores automáticamente.",
+    "Please enter a valid http(s) URL.": "Introduce una URL http(s) válida.",
+    "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
+        "DLL instalada.\n\nReinicia MSI Afterburner y activa el plugin en Ajustes → Monitorización. System Manager detectará el hotspot automáticamente.",
+    "Download failed:": "La descarga falló:",
+},
+"fr": {
+    "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
+    "Turn Off All": "Tout éteindre", "Screensaver": "Écran de veille",
+    "Misc  ▾": "Plus  ▾", "↻  Refresh": "↻  Actualiser",
+    "🔓  Layout unlocked": "🔓  Disposition déverrouillée", "🔒  Layout": "🔒  Disposition", "Uptime": "Durée de fonctionnement",
+    "Extend displays": "Étendre les écrans", "Duplicate displays": "Dupliquer les écrans",
+    "PC screen only": "Écran du PC uniquement", "Second screen only": "Second écran uniquement",
+    "Refresh Rate": "Taux de rafraîchissement", "RTSS FPS Cap…": "Limite FPS RTSS…",
+    "Sound Output": "Sortie audio", "Snipping Tool": "Outil Capture", "Open Display Settings": "Ouvrir les paramètres d'affichage",
+    "GPU Hotspot (Afterburner)…": "Hotspot GPU (Afterburner)…", "Customize Design…": "Personnaliser le design…",
+    "Alerts on critical temperature": "Alertes de température critique", "Alert thresholds…": "Seuils d'alerte…",
+    "Language": "Langue", "Start with Windows": "Démarrer avec Windows", "Save Debug Info…": "Enregistrer les infos de débogage…",
+    "Check for Updates": "Rechercher des mises à jour", "Custom…": "Personnalisé…", "No devices found": "Aucun périphérique trouvé",
+    "Show System Manager": "Afficher System Manager", "Exit": "Quitter",
+    "Warning: temperature elevated": "Avertissement : température élevée", "Critical: temperature too high": "Critique : température trop élevée",
+    "All good": "Tout va bien", "Temperature critical": "Température critique",
+    "Cooling": "Refroidissement", "Displays": "Écrans", "System": "Système", "Controller": "Manette",
+    "Processor": "Processeur", "Graphics": "Carte graphique", "Memory": "Mémoire", "Motherboard": "Carte mère",
+    "No display detected": "aucun écran détecté", "No monitors detected.": "Aucun écran détecté.",
+    "Make Primary": "Définir comme principal", "Disable": "Désactiver", "Enable": "Activer", "Disabled": "Désactivé",
+    "Double-click to rename": "Double-clic pour renommer", "Rename Fan": "Renommer le ventilateur", "Fan name:": "Nom du ventilateur :",
+    "Alert thresholds": "Seuils d'alerte",
+    "Above <b>Warning</b> the value turns amber, above <b>Critical</b> red — the health dot and tray icon change too, and a notification is sent (if enabled).":
+        "Au-dessus de <b>Avertissement</b> la valeur devient ambre, au-dessus de <b>Critique</b> rouge — le point d'état et l'icône de la barre changent aussi, et une notification est envoyée (si activée).",
+    "Sensor": "Capteur", "Warning (°C)": "Avertissement (°C)", "Critical (°C)": "Critique (°C)", "GPU (Core)": "GPU (cœur)", "GPU Hotspot": "Hotspot GPU",
+    "Warning must be below Critical — corrected automatically on save.": "Avertissement doit être inférieur à Critique — corrigé automatiquement à l'enregistrement.",
+    "Default": "Par défaut", "Cancel": "Annuler", "Save": "Enregistrer", "Save & Restart": "Enregistrer et redémarrer",
+    "Customize Design": "Personnaliser le design", "Primary…": "Couleur principale…", "Secondary…": "Couleur secondaire…",
+    "RTSS FPS Cap": "Limite FPS RTSS", "Global FPS Cap": "Limite FPS globale", "Custom:": "Personnalisé :", "Set": "Appliquer",
+    "System Manager  —  Checking for updates…": "System Manager  —  Recherche de mises à jour…",
+    "System Manager  —  Downloading update…": "System Manager  —  Téléchargement de la mise à jour…",
+    "Update Failed": "Échec de la mise à jour", "Couldn't check for updates:": "Impossible de vérifier les mises à jour :",
+    "Up to date": "À jour", "You're already running the latest version.": "Vous utilisez déjà la dernière version.",
+    "Update": "Mise à jour", "Update downloaded!\nThe app will now restart.": "Mise à jour téléchargée !\nL'application va redémarrer.",
+    "Set up GPU Hotspot": "Configurer le hotspot GPU",
+    "The real hotspot temperature of your RTX 50 is locked by NVIDIA. Via MSI Afterburner we get it in 3 steps — we only <b>read</b> values, nothing on the card is changed.":
+        "La vraie température hotspot de votre RTX 50 est verrouillée par NVIDIA. Via MSI Afterburner nous l'obtenons en 3 étapes — nous ne faisons que <b>lire</b> des valeurs, rien n'est modifié sur la carte.",
+    "●  Not set up yet · Step 1 of 3": "●  Pas encore configuré · Étape 1 sur 3", "●  Step 2 of 3 — Unlock hotspot": "●  Étape 2 sur 3 — Déverrouiller le hotspot",
+    "●  Step 3 of 3 — Enable display": "●  Étape 3 sur 3 — Activer l'affichage", "✔  Hotspot active": "✔  Hotspot actif",
+    "Install plugin": "Installer le plugin", "Unlock hotspot": "Déverrouiller le hotspot", "Enable display": "Activer l'affichage",
+    "done": "terminé", "open": "à faire",
+    "The hotspot plugin is installed and detected.": "Le plugin hotspot est installé et détecté.",
+    "Load the small hotspot plugin to where Afterburner finds it. One click is enough — <b>close MSI Afterburner first</b>.":
+        "Copiez le petit plugin hotspot là où Afterburner le trouve. Un clic suffit — <b>fermez d'abord MSI Afterburner</b>.",
+    "Reinstall plugin": "Réinstaller le plugin", "Install plugin automatically": "Installer le plugin automatiquement",
+    "Open plugin folder": "Ouvrir le dossier des plugins", "Guide": "Guide",
+    "One-time: add two lines to Afterburner's config. <b>Close Afterburner first</b> (also in the tray).":
+        "Une seule fois : ajoutez deux lignes à la configuration d'Afterburner. <b>Fermez d'abord Afterburner</b> (aussi dans la barre).",
+    "✔  Your GPU detected · DeviceID": "✔  GPU détecté · DeviceID",
+    "DeviceID not detected — enter it from GPU-Z (field “Device ID”, part after 10DE).": "DeviceID non détecté — saisissez-le depuis GPU-Z (champ “Device ID”, partie après 10DE).",
+    "<b>a)</b>  “Open RTCore.cfg” → insert in section <b>[GPU_10DE]</b>:": "<b>a)</b>  « Ouvrir RTCore.cfg » → insérer dans la section <b>[GPU_10DE]</b> :",
+    "<b>b)</b>  “Open profile” → insert in section <b>[Settings]</b>:": "<b>b)</b>  « Ouvrir le profil » → insérer dans la section <b>[Settings]</b> :",
+    "Open RTCore.cfg": "Ouvrir RTCore.cfg", "Open profile": "Ouvrir le profil",
+    "⚠  Don't forget line (b) — otherwise Afterburner shows wrong clocks or crashes.": "⚠  N'oubliez pas la ligne (b) — sinon Afterburner affiche de mauvaises fréquences ou plante.",
+    "Start Afterburner → Settings → Monitoring → tick <b>“GPU hotspot temperature”</b>. Then enable here:":
+        "Lancez Afterburner → Paramètres → Surveillance → cochez <b>« GPU hotspot temperature »</b>. Puis activez ici :",
+    "  Show hotspot in System Manager": "  Afficher le hotspot dans System Manager",
+    "Advanced (load plugin from URL)": "Avancé (charger le plugin depuis une URL)",
+    "Load the DLL from a URL you trust (goes into the plugin folder):": "Chargez la DLL depuis une URL de confiance (placée dans le dossier des plugins) :",
+    "Load & install": "Télécharger et installer", "Close": "Fermer", "Copy": "Copier", "Copied ✓": "Copié ✓",
+    "Primary": "Principal",
+    "Plugin folder not found:": "Dossier des plugins introuvable :", "Is MSI Afterburner installed?": "MSI Afterburner est-il installé ?",
+    "RTCore.cfg not found:": "RTCore.cfg introuvable :", "Profiles folder not found:": "Dossier des profils introuvable :",
+    "Bundled plugin not found.": "Plugin fourni introuvable.",
+    "Couldn't write the DLL — MSI Afterburner is probably still running and has the plugin loaded.\n\nPlease close Afterburner completely (also in the tray) and click “Install plugin automatically” again.":
+        "Impossible d'écrire la DLL — MSI Afterburner est probablement encore ouvert et a chargé le plugin.\n\nFermez complètement Afterburner (aussi dans la barre) puis cliquez à nouveau sur « Installer le plugin automatiquement ».",
+    "Installation failed:": "L'installation a échoué :",
+    "Plugin installed.\n\n1. Start MSI Afterburner\n2. Settings → Monitoring → enable the new sensors\n   (“GPU memory junction temperature” works right away)\n3. For the real hotspot, also do the RTCore unlock\n\nSystem Manager will pick up the values automatically.":
+        "Plugin installé.\n\n1. Lancez MSI Afterburner\n2. Paramètres → Surveillance → activez les nouveaux capteurs\n   (« GPU memory junction temperature » fonctionne immédiatement)\n3. Pour le vrai hotspot, effectuez aussi le déverrouillage RTCore\n\nSystem Manager lira ensuite les valeurs automatiquement.",
+    "Please enter a valid http(s) URL.": "Veuillez saisir une URL http(s) valide.",
+    "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
+        "DLL installée.\n\nRedémarrez MSI Afterburner et activez le plugin dans Paramètres → Surveillance. System Manager détectera ensuite le hotspot automatiquement.",
+    "Download failed:": "Le téléchargement a échoué :",
+},
+}
+
+
+def tr(s: str) -> str:
+    """Translate a UI string for the active language (falls back to English)."""
+    if _LANG == "en":
+        return s
+    return _TR.get(_LANG, {}).get(s, s)
+
+
 def afterburner_plugin_dir() -> str:
     """Default MSI Afterburner monitoring-plugin folder."""
     pf = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
@@ -1888,13 +2150,13 @@ class MonitorCard(QFrame):
         top.addStretch()
 
         if not mon["primary"]:
-            b = QPushButton("Make Primary")
+            b = QPushButton(tr("Make Primary"))
             b.setObjectName("btnGreen")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda: self.sig_make_primary.emit(mon["device"]))
             top.addWidget(b)
 
-        bd = QPushButton("Disable")
+        bd = QPushButton(tr("Disable"))
         bd.setObjectName("btnAmber")
         bd.setCursor(Qt.CursorShape.PointingHandCursor)
         bd.clicked.connect(
@@ -1944,12 +2206,12 @@ class DisabledCard(QFrame):
         title = QLabel(dev["device"])
         title.setStyleSheet("font-size: 11pt; font-weight: 700;")
         top.addWidget(title)
-        badge = QLabel("Disabled")
+        badge = QLabel(tr("Disabled"))
         badge.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
         top.addWidget(badge)
         top.addStretch()
 
-        be = QPushButton("Enable")
+        be = QPushButton(tr("Enable"))
         be.setObjectName("btnGreen")
         be.setCursor(Qt.CursorShape.PointingHandCursor)
         be.clicked.connect(lambda: self.sig_enable.emit(dev["device"], active))
@@ -2122,7 +2384,7 @@ class FanTile(QFrame):
         self.setObjectName("fanTile")
         self.setFixedSize(150, 150)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Double-click to rename")
+        self.setToolTip(tr("Double-click to rename"))
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)
@@ -2159,7 +2421,7 @@ class FanTile(QFrame):
 
     def mouseDoubleClickEvent(self, event):
         name, ok = QInputDialog.getText(
-            self, "Rename Fan", "Fan name:",
+            self, tr("Rename Fan"), tr("Fan name:"),
             text=self._name_lbl.text()
         )
         if ok and name.strip():
@@ -2305,7 +2567,7 @@ class RTSSCapDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("RTSS FPS Cap")
+        self.setWindowTitle(tr("RTSS FPS Cap"))
         self.setModal(True)
         self.setMinimumWidth(400)
 
@@ -2314,7 +2576,7 @@ class RTSSCapDialog(QDialog):
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(16)
 
-        title = QLabel("Global FPS Cap")
+        title = QLabel(tr("Global FPS Cap"))
         title.setStyleSheet("font-size:13pt; font-weight:700;")
         lay.addWidget(title)
 
@@ -2334,7 +2596,7 @@ class RTSSCapDialog(QDialog):
         # Custom row
         custom_row = QHBoxLayout()
         custom_row.setSpacing(8)
-        custom_lbl = QLabel("Custom:")
+        custom_lbl = QLabel(tr("Custom:"))
         custom_lbl.setStyleSheet(f"color:{SUBTEXT};")
         custom_row.addWidget(custom_lbl)
 
@@ -2345,7 +2607,7 @@ class RTSSCapDialog(QDialog):
             self._entry.setText(str(current))
         custom_row.addWidget(self._entry)
 
-        set_btn = QPushButton("Set")
+        set_btn = QPushButton(tr("Set"))
         set_btn.setObjectName("btnAccent")
         set_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         set_btn.clicked.connect(self._apply_custom)
@@ -2383,7 +2645,7 @@ class ThemeDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Customize Design")
+        self.setWindowTitle(tr("Customize Design"))
         self.setModal(True)
         self.setMinimumWidth(380)
 
@@ -2420,10 +2682,10 @@ class ThemeDialog(QDialog):
         crl = QHBoxLayout(self._custom_row)
         crl.setContentsMargins(0, 2, 0, 0)
         crl.setSpacing(8)
-        self._primary_btn = QPushButton("Primary…")
+        self._primary_btn = QPushButton(tr("Primary…"))
         self._primary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._primary_btn.clicked.connect(self._pick_primary)
-        self._secondary_btn = QPushButton("Secondary…")
+        self._secondary_btn = QPushButton(tr("Secondary…"))
         self._secondary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._secondary_btn.clicked.connect(self._pick_secondary)
         crl.addWidget(self._primary_btn)
@@ -2432,10 +2694,10 @@ class ThemeDialog(QDialog):
 
         act = QHBoxLayout()
         act.addStretch()
-        cancel = QPushButton("Cancel")
+        cancel = QPushButton(tr("Cancel"))
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.clicked.connect(self.reject)
-        save = QPushButton("Save & Restart")
+        save = QPushButton(tr("Save & Restart"))
         save.setObjectName("btnGreen")
         save.setCursor(Qt.CursorShape.PointingHandCursor)
         save.clicked.connect(self.accept)
@@ -2491,7 +2753,7 @@ class AfterburnerDialog(QDialog):
     def __init__(self, parent, available: bool, hotspot):
         super().__init__(parent)
         self._parent = parent
-        self.setWindowTitle("GPU-Hotspot einrichten")
+        self.setWindowTitle(tr("Set up GPU Hotspot"))
         self.setModal(True)
         self.setMinimumWidth(500)
         self._dev_id = detect_nvidia_device_id()
@@ -2508,27 +2770,26 @@ class AfterburnerDialog(QDialog):
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(10)
 
-        title = QLabel("GPU-Hotspot einrichten")
+        title = QLabel(tr("Set up GPU Hotspot"))
         title.setStyleSheet("font-size:13pt; font-weight:700;")
         lay.addWidget(title)
-        sub = QLabel(
-            "Die echte Hotspot-Temperatur deiner RTX 50 ist von NVIDIA gesperrt. Über "
-            "MSI Afterburner holen wir sie in 3 Schritten — wir lesen dabei nur Werte, "
-            "es wird nichts an der Karte verändert."
-        )
+        sub = QLabel(tr(
+            "The real hotspot temperature of your RTX 50 is locked by NVIDIA. Via MSI Afterburner we get it in 3 steps — we only <b>read</b> values, nothing on the card is changed."
+        ))
+        sub.setTextFormat(Qt.TextFormat.RichText)
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
         lay.addWidget(sub)
 
         # status pill: how far the setup has progressed
         if not s1_done:
-            s_txt, s_col, s_bg, s_bd = "●  Noch nicht eingerichtet · Schritt 1 von 3", AMBER, "#241f10", "#3d2e12"
+            s_txt, s_col, s_bg, s_bd = tr("●  Not set up yet · Step 1 of 3"), AMBER, "#241f10", "#3d2e12"
         elif not s2_done:
-            s_txt, s_col, s_bg, s_bd = "●  Schritt 2 von 3 — Hotspot freischalten", AMBER, "#241f10", "#3d2e12"
+            s_txt, s_col, s_bg, s_bd = tr("●  Step 2 of 3 — Unlock hotspot"), AMBER, "#241f10", "#3d2e12"
         elif not s3_done:
-            s_txt, s_col, s_bg, s_bd = "●  Schritt 3 von 3 — Anzeige einschalten", AMBER, "#241f10", "#3d2e12"
+            s_txt, s_col, s_bg, s_bd = tr("●  Step 3 of 3 — Enable display"), AMBER, "#241f10", "#3d2e12"
         else:
-            s_txt = f"✔  Hotspot aktiv ({hotspot:.0f} °C)" if has_hot else "✔  Hotspot aktiv"
+            s_txt = tr("✔  Hotspot active") + (f" ({hotspot:.0f} °C)" if has_hot else "")
             s_col, s_bg, s_bd = FOREST, "#0f2a18", "#1f3a2a"
         pill = QLabel(s_txt)
         pill.setStyleSheet(
@@ -2539,24 +2800,23 @@ class AfterburnerDialog(QDialog):
         lay.addWidget(pill)
 
         # ── Step 1: install the plugin ──
-        b1 = self._make_step(lay, 1, "Plugin installieren", s1_done, not s1_done)
+        b1 = self._make_step(lay, 1, tr("Install plugin"), s1_done, not s1_done)
         b1.addWidget(self._lead(
-            "Das Hotspot-Plugin ist installiert und wird erkannt." if s1_done else
-            "Lade das kleine Hotspot-Plugin dorthin, wo Afterburner es findet. Ein "
-            "Klick genügt — <b>MSI Afterburner vorher schließen</b>."
+            tr("The hotspot plugin is installed and detected.") if s1_done else
+            tr("Load the small hotspot plugin to where Afterburner finds it. One click is enough — <b>close MSI Afterburner first</b>.")
         ))
         if os.path.isfile(bundled_plugin_path()):
-            b_install = QPushButton("Plugin neu installieren" if s1_done else "Plugin automatisch installieren")
+            b_install = QPushButton(tr("Reinstall plugin") if s1_done else tr("Install plugin automatically"))
             b_install.setObjectName("btnAccent")
             b_install.setCursor(Qt.CursorShape.PointingHandCursor)
             b_install.clicked.connect(self._install_bundled)
             b1.addWidget(b_install)
         row1 = QHBoxLayout()
         row1.setSpacing(8)
-        b_folder = QPushButton("Plugin-Ordner öffnen")
+        b_folder = QPushButton(tr("Open plugin folder"))
         b_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         b_folder.clicked.connect(self._open_folder)
-        b_guide = QPushButton("Anleitung")
+        b_guide = QPushButton(tr("Guide"))
         b_guide.setCursor(Qt.CursorShape.PointingHandCursor)
         b_guide.clicked.connect(lambda: self._open(self._GUIDE_URL))
         row1.addWidget(b_folder)
@@ -2565,52 +2825,50 @@ class AfterburnerDialog(QDialog):
         b1.addLayout(row1)
 
         # ── Step 2: RTCore unlock (auto-detected DeviceID + copy lines) ──
-        b2 = self._make_step(lay, 2, "Hotspot freischalten", s2_done, s1_done and not s2_done)
+        b2 = self._make_step(lay, 2, tr("Unlock hotspot"), s2_done, s1_done and not s2_done)
         b2.addWidget(self._lead(
-            "Einmalig: zwei Zeilen in Afterburners Konfig ergänzen. "
-            "<b>Afterburner vorher schließen</b> (auch im Infobereich)."
+            tr("One-time: add two lines to Afterburner's config. <b>Close Afterburner first</b> (also in the tray).")
         ))
         if self._dev_id:
-            det = QLabel(f"✔  Deine GPU erkannt · DeviceID <b>{dev}</b>")
+            det = QLabel(f"{tr('✔  Your GPU detected · DeviceID')} <b>{dev}</b>")
             det.setStyleSheet(f"color:{FOREST}; font-size:9pt;")
         else:
-            det = QLabel("DeviceID nicht erkannt — aus GPU-Z eintragen (Feld „Device ID“, Teil nach 10DE).")
+            det = QLabel(tr("DeviceID not detected — enter it from GPU-Z (field “Device ID”, part after 10DE)."))
             det.setStyleSheet(f"color:{AMBER}; font-size:9pt;")
         det.setTextFormat(Qt.TextFormat.RichText)
         det.setWordWrap(True)
         b2.addWidget(det)
-        b2.addWidget(self._cap('<b>a)</b>  „RTCore.cfg öffnen“ → im Abschnitt <b>[GPU_10DE]</b> einfügen:'))
+        b2.addWidget(self._cap(tr('<b>a)</b>  “Open RTCore.cfg” → insert in section <b>[GPU_10DE]</b>:')))
         self._snippet_row(b2, "", f"G1B2 = {dev}h")
         row_a = QHBoxLayout()
         row_a.setSpacing(8)
-        b_rt = QPushButton("RTCore.cfg öffnen")
+        b_rt = QPushButton(tr("Open RTCore.cfg"))
         b_rt.setCursor(Qt.CursorShape.PointingHandCursor)
         b_rt.clicked.connect(self._open_rtcore)
         row_a.addWidget(b_rt)
         row_a.addStretch()
         b2.addLayout(row_a)
-        b2.addWidget(self._cap('<b>b)</b>  „Profil öffnen“ → im Abschnitt <b>[Settings]</b> einfügen:'))
+        b2.addWidget(self._cap(tr('<b>b)</b>  “Open profile” → insert in section <b>[Settings]</b>:')))
         self._snippet_row(b2, "", "LowLevelMonitoring = 0")
         row_b = QHBoxLayout()
         row_b.setSpacing(8)
-        b_pr = QPushButton("Profil öffnen")
+        b_pr = QPushButton(tr("Open profile"))
         b_pr.setCursor(Qt.CursorShape.PointingHandCursor)
         b_pr.clicked.connect(self._open_profiles)
         row_b.addWidget(b_pr)
         row_b.addStretch()
         b2.addLayout(row_b)
-        warn = QLabel("⚠  Zeile (b) nicht vergessen — sonst zeigt Afterburner falsche Taktraten oder stürzt ab.")
+        warn = QLabel(tr("⚠  Don't forget line (b) — otherwise Afterburner shows wrong clocks or crashes."))
         warn.setWordWrap(True)
         warn.setStyleSheet(f"color:{AMBER}; font-size:8.5pt;")
         b2.addWidget(warn)
 
         # ── Step 3: enable the readout ──
-        b3 = self._make_step(lay, 3, "Anzeige einschalten", s3_done, s2_done and not s3_done)
+        b3 = self._make_step(lay, 3, tr("Enable display"), s3_done, s2_done and not s3_done)
         b3.addWidget(self._lead(
-            "Afterburner starten → Einstellungen → Überwachung → "
-            "<b>„GPU hotspot temperature“</b> anhaken. Dann hier aktivieren:"
+            tr("Start Afterburner → Settings → Monitoring → tick <b>“GPU hotspot temperature”</b>. Then enable here:")
         ))
-        self._chk = QCheckBox("  Hotspot in System Manager anzeigen")
+        self._chk = QCheckBox(tr("  Show hotspot in System Manager"))
         self._chk.setObjectName("hotspotToggle")
         self._chk.setChecked(bool(parent._af_enabled))
         self._chk.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2633,7 +2891,7 @@ class AfterburnerDialog(QDialog):
 
         # ── Advanced (collapsed): install the plugin from a URL the user trusts ──
         adv = self._make_advanced(lay)
-        note = QLabel("DLL von einer URL laden, der du vertraust (landet im Plugin-Ordner):")
+        note = QLabel(tr("Load the DLL from a URL you trust (goes into the plugin folder):"))
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
         adv.addWidget(note)
@@ -2641,7 +2899,7 @@ class AfterburnerDialog(QDialog):
         dl.setSpacing(8)
         self._url = QLineEdit()
         self._url.setPlaceholderText("https://…/BlackwellHotspot.dll")
-        b_dl = QPushButton("Laden & installieren")
+        b_dl = QPushButton(tr("Load & install"))
         b_dl.setObjectName("btnAccent")
         b_dl.setCursor(Qt.CursorShape.PointingHandCursor)
         b_dl.clicked.connect(self._download)
@@ -2652,7 +2910,7 @@ class AfterburnerDialog(QDialog):
         lay.addStretch()
         act = QHBoxLayout()
         act.addStretch()
-        close = QPushButton("Schließen")
+        close = QPushButton(tr("Close"))
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.clicked.connect(self.accept)
         act.addWidget(close)
@@ -2692,7 +2950,7 @@ class AfterburnerDialog(QDialog):
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tl = QLabel(title)
         tl.setStyleSheet("font-weight:700; font-size:10.5pt;")
-        state = QLabel("erledigt" if done else "offen")
+        state = QLabel(tr("done") if done else tr("open"))
         state.setStyleSheet(f"color:{FOREST if done else SUBTEXT}; font-size:8.5pt;")
         chev = QLabel("▴" if expanded else "▾")
         chev.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt;")
@@ -2723,7 +2981,7 @@ class AfterburnerDialog(QDialog):
         head.setCursor(Qt.CursorShape.PointingHandCursor)
         hh = QHBoxLayout(head)
         hh.setContentsMargins(2, 6, 2, 2)
-        lbl = QLabel("▸  Erweitert (Plugin von URL laden)")
+        lbl = QLabel("▸  " + tr("Advanced (load plugin from URL)"))
         lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
         hh.addWidget(lbl)
         hh.addStretch()
@@ -2735,7 +2993,7 @@ class AfterburnerDialog(QDialog):
 
         def _toggle():
             body.setVisible(not body.isVisible())
-            lbl.setText(("▾" if body.isVisible() else "▸") + "  Erweitert (Plugin von URL laden)")
+            lbl.setText(("▾" if body.isVisible() else "▸") + "  " + tr("Advanced (load plugin from URL)"))
         head.clicked.connect(_toggle)
 
         lay.addWidget(head)
@@ -2761,7 +3019,7 @@ class AfterburnerDialog(QDialog):
         else:
             QMessageBox.information(
                 self, "GPU Hotspot",
-                f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
+                f"{tr('Plugin folder not found:')}\n{d}\n\n{tr('Is MSI Afterburner installed?')}"
             )
 
     def _snippet_row(self, lay, caption, code):
@@ -2778,7 +3036,7 @@ class AfterburnerDialog(QDialog):
             f"font-family:Consolas,'Courier New',monospace; background:{CARD}; "
             f"color:{TEXT}; border:1px solid {BORDER}; border-radius:6px; padding:7px 10px;"
         )
-        b = QPushButton("Kopieren")
+        b = QPushButton(tr("Copy"))
         b.setObjectName("btnAccent")
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _=None, t=code, btn=b: self._copy(t, btn))
@@ -2790,8 +3048,8 @@ class AfterburnerDialog(QDialog):
         try:
             QApplication.clipboard().setText(text)
             if btn is not None:
-                btn.setText("Kopiert ✓")
-                QTimer.singleShot(1400, lambda: btn.setText("Kopieren"))
+                btn.setText(tr("Copied ✓"))
+                QTimer.singleShot(1400, lambda: btn.setText(tr("Copy")))
         except Exception:
             pass
 
@@ -2806,7 +3064,7 @@ class AfterburnerDialog(QDialog):
         else:
             QMessageBox.information(
                 self, "GPU Hotspot",
-                f"RTCore.cfg nicht gefunden:\n{p}\n\nIst MSI Afterburner installiert?"
+                f"{tr('RTCore.cfg not found:')}\n{p}\n\n{tr('Is MSI Afterburner installed?')}"
             )
 
     def _open_profiles(self):
@@ -2816,19 +3074,19 @@ class AfterburnerDialog(QDialog):
         else:
             QMessageBox.information(
                 self, "GPU Hotspot",
-                f"Profile-Ordner nicht gefunden:\n{p}\n\nIst MSI Afterburner installiert?"
+                f"{tr('Profiles folder not found:')}\n{p}\n\n{tr('Is MSI Afterburner installed?')}"
             )
 
     def _install_bundled(self):
         src = bundled_plugin_path()
         if not os.path.isfile(src):
-            QMessageBox.warning(self, "GPU Hotspot", "Mitgeliefertes Plugin nicht gefunden.")
+            QMessageBox.warning(self, "GPU Hotspot", tr("Bundled plugin not found."))
             return
         d = afterburner_plugin_dir()
         if not os.path.isdir(d):
             QMessageBox.warning(
                 self, "GPU Hotspot",
-                f"Plugin-Ordner nicht gefunden:\n{d}\n\nIst MSI Afterburner installiert?"
+                f"{tr('Plugin folder not found:')}\n{d}\n\n{tr('Is MSI Afterburner installed?')}"
             )
             return
         dest = os.path.join(d, "Hotspot.dll")
@@ -2837,23 +3095,15 @@ class AfterburnerDialog(QDialog):
         except PermissionError:
             QMessageBox.warning(
                 self, "GPU Hotspot",
-                "Konnte die DLL nicht schreiben — vermutlich läuft MSI Afterburner noch "
-                "und hat das Plugin geladen.\n\nBitte Afterburner komplett beenden "
-                "(auch im Infobereich) und dann erneut auf „Plugin automatisch "
-                "installieren“ klicken."
+                tr("Couldn't write the DLL — MSI Afterburner is probably still running and has the plugin loaded.\n\nPlease close Afterburner completely (also in the tray) and click “Install plugin automatically” again.")
             )
             return
         except Exception as e:
-            QMessageBox.warning(self, "GPU Hotspot", f"Installation fehlgeschlagen:\n{e}")
+            QMessageBox.warning(self, "GPU Hotspot", f"{tr('Installation failed:')}\n{e}")
             return
         QMessageBox.information(
             self, "GPU Hotspot",
-            "Plugin installiert.\n\n"
-            "1. MSI Afterburner starten\n"
-            "2. Einstellungen → Überwachung → die neuen Sensoren aktivieren\n"
-            "   („GPU memory junction temperature“ geht sofort)\n"
-            "3. Für den echten Hotspot zusätzlich das RTCore-Unlock durchführen\n\n"
-            "System Manager liest die Werte danach automatisch mit."
+            tr("Plugin installed.\n\n1. Start MSI Afterburner\n2. Settings → Monitoring → enable the new sensors\n   (“GPU memory junction temperature” works right away)\n3. For the real hotspot, also do the RTCore unlock\n\nSystem Manager will pick up the values automatically.")
         )
 
     def _download(self):
@@ -2861,12 +3111,12 @@ class AfterburnerDialog(QDialog):
         if not url:
             return
         if not (url.startswith("http://") or url.startswith("https://")):
-            QMessageBox.warning(self, "GPU Hotspot", "Bitte eine gültige http(s)-URL angeben.")
+            QMessageBox.warning(self, "GPU Hotspot", tr("Please enter a valid http(s) URL."))
             return
         d = afterburner_plugin_dir()
         if not os.path.isdir(d):
             QMessageBox.warning(self, "GPU Hotspot",
-                                f"Plugin-Ordner nicht gefunden:\n{d}")
+                                f"{tr('Plugin folder not found:')}\n{d}")
             return
         try:
             dest = os.path.join(d, "BlackwellHotspot.dll")
@@ -2875,12 +3125,10 @@ class AfterburnerDialog(QDialog):
                 shutil.copyfileobj(r, f)
             QMessageBox.information(
                 self, "GPU Hotspot",
-                "DLL installiert.\n\nStarte MSI Afterburner neu und aktiviere das "
-                "Plugin unter Einstellungen → Überwachung. Danach erkennt System "
-                "Manager den Hotspot automatisch."
+                tr("DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.")
             )
         except Exception as e:
-            QMessageBox.warning(self, "GPU Hotspot", f"Download fehlgeschlagen:\n{e}")
+            QMessageBox.warning(self, "GPU Hotspot", f"{tr('Download failed:')}\n{e}")
 
 
 # ── Main window ─────────────────────────────────────────────────────────────────
@@ -2892,19 +3140,17 @@ class ThresholdDialog(QDialog):
 
     def __init__(self, parent, th: dict):
         super().__init__(parent)
-        self.setWindowTitle("Schwellen für Warnungen")
+        self.setWindowTitle(tr("Alert thresholds"))
         self.setModal(True)
         self.setMinimumWidth(440)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 18)
         lay.setSpacing(12)
 
-        title = QLabel("Schwellen für Warnungen")
+        title = QLabel(tr("Alert thresholds"))
         title.setStyleSheet("font-size:13pt; font-weight:700;")
         lay.addWidget(title)
-        sub = QLabel("Ab <b>Warnung</b> wird der Wert bernstein, ab <b>Kritisch</b> rot — "
-                     "dann wechseln auch Gesundheitspunkt und Tray-Icon, und es kommt "
-                     "eine Benachrichtigung (falls aktiviert).")
+        sub = QLabel(tr("Above <b>Warning</b> the value turns amber, above <b>Critical</b> red — the health dot and tray icon change too, and a notification is sent (if enabled)."))
         sub.setTextFormat(Qt.TextFormat.RichText)
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
@@ -2913,13 +3159,13 @@ class ThresholdDialog(QDialog):
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(8)
-        for c, text in enumerate(("Sensor", "Warnung (°C)", "Kritisch (°C)")):
+        for c, text in enumerate((tr("Sensor"), tr("Warning (°C)"), tr("Critical (°C)"))):
             h = QLabel(text)
             h.setStyleSheet(f"color:{SUBTEXT}; font-size:8pt; font-weight:600;")
             grid.addWidget(h, 0, c)
         self._spins = {}
         for r, (key, name) in enumerate(self._ROWS, start=1):
-            lbl = QLabel(name)
+            lbl = QLabel(tr(name))
             lbl.setStyleSheet("font-weight:600;")
             warn = QSpinBox()
             warn.setRange(30, 149)
@@ -2937,21 +3183,21 @@ class ThresholdDialog(QDialog):
         grid.setColumnStretch(0, 1)
         lay.addLayout(grid)
 
-        note = QLabel("Warnung muss unter Kritisch liegen — wird beim Speichern automatisch korrigiert.")
+        note = QLabel(tr("Warning must be below Critical — corrected automatically on save."))
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{AMBER}; font-size:8pt;")
         lay.addWidget(note)
 
         act = QHBoxLayout()
-        b_def = QPushButton("Standard")
+        b_def = QPushButton(tr("Default"))
         b_def.setCursor(Qt.CursorShape.PointingHandCursor)
         b_def.clicked.connect(self._reset)
         act.addWidget(b_def)
         act.addStretch()
-        b_cancel = QPushButton("Abbrechen")
+        b_cancel = QPushButton(tr("Cancel"))
         b_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         b_cancel.clicked.connect(self.reject)
-        b_save = QPushButton("Speichern")
+        b_save = QPushButton(tr("Save"))
         b_save.setObjectName("btnAccent")
         b_save.setCursor(Qt.CursorShape.PointingHandCursor)
         b_save.clicked.connect(self.accept)
@@ -3061,7 +3307,7 @@ class MainWindow(QMainWindow):
         self._health_dot = QLabel()
         self._health_dot.setFixedSize(10, 10)
         hl.addWidget(self._health_dot)
-        self._uptime_lbl = QLabel("Laufzeit —")
+        self._uptime_lbl = QLabel(f"{tr('Uptime')} —")
         self._uptime_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt;")
         hl.addWidget(self._uptime_lbl)
         self._ab_lbl = QLabel("Afterburner –")
@@ -3078,8 +3324,8 @@ class MainWindow(QMainWindow):
         # ── Metric cards (shown on the Overview tab, not an always-on strip) ─
         self._chip_cpu  = StatsChip("CPU",        PEACH, icon="cpu")
         self._chip_gpu  = StatsChip("GPU",        BLUE,  icon="gpu")
-        self._chip_sys  = StatsChip("System",     AMBER, icon="bolt")
-        self._chip_ctrl = StatsChip("Controller", TEXT,  icon="pad")
+        self._chip_sys  = StatsChip(tr("System"),     AMBER, icon="bolt")
+        self._chip_ctrl = StatsChip(tr("Controller"), TEXT,  icon="pad")
 
         # ── Tabs (Übersicht / System / Fans / Monitors) ─────────────────────
         self._tabs = QTabWidget()
@@ -3157,8 +3403,8 @@ class MainWindow(QMainWindow):
 
         ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections3")
         ov_split.addWidget(chips_holder)
-        ov_split.addWidget(_section("Cooling", cool_card, "fan"))
-        ov_split.addWidget(_section("Displays", disp_card, "mon"))
+        ov_split.addWidget(_section(tr("Cooling"), cool_card, "fan"))
+        ov_split.addWidget(_section(tr("Displays"), disp_card, "mon"))
         ov_split.setStretchFactor(0, 0)
         ov_split.setStretchFactor(1, 1)
         ov_split.setStretchFactor(2, 0)
@@ -3177,14 +3423,14 @@ class MainWindow(QMainWindow):
         sensors_layout.setContentsMargins(16, 12, 16, 12)
         sensors_layout.setSpacing(10)
 
-        self._sensor_cpu = SensorCard("CPU", "Processor", ["Package", "Power", "Voltage"], accent=PEACH, icon="cpu")
+        self._sensor_cpu = SensorCard("CPU", tr("Processor"), ["Package", "Power", "Voltage"], accent=PEACH, icon="cpu")
         self._sensor_gpu = SensorCard(
-            "GPU", "Graphics",
+            "GPU", tr("Graphics"),
             ["Core", "Hotspot", "Mem Junction", "Core Clock", "Mem Clock", "Power", "Fan", "VRAM", "PCIe Load"],
             accent=BLUE, icon="gpu",
         )
-        self._sensor_ram = SensorCard("RAM", "Memory", ["Used", "Available", "Speed"], accent=FOREST, icon="ram")
-        self._sensor_mb  = SensorCard("MB", "Motherboard")
+        self._sensor_ram = SensorCard("RAM", tr("Memory"), ["Used", "Available", "Speed"], accent=FOREST, icon="ram")
+        self._sensor_mb  = SensorCard("MB", tr("Motherboard"))
         for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
             sensors_layout.addWidget(card)
         sensors_layout.addStretch()
@@ -3214,10 +3460,10 @@ class MainWindow(QMainWindow):
         self._monitor_layout.addStretch()
         mon_scroll.setWidget(self._scroll_content)
 
-        self._tabs.addTab(ov_scroll,      "Übersicht")
-        self._tabs.addTab(sensors_scroll, "System")
-        self._tabs.addTab(fan_scroll,     "Fans")
-        self._tabs.addTab(mon_scroll,     "Monitors")
+        self._tabs.addTab(ov_scroll,      tr("Overview"))
+        self._tabs.addTab(sensors_scroll, tr("System"))
+        self._tabs.addTab(fan_scroll,     tr("Fans"))
+        self._tabs.addTab(mon_scroll,     tr("Monitors"))
 
         root.addWidget(self._tabs, 1)
 
@@ -3240,15 +3486,15 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot)
             return b
 
-        bl.addWidget(_btn("Turn Off All", "btnRed",  self._on_turn_off))
-        bl.addWidget(_btn("Screensaver",  "btnBlue", self._on_screensaver))
+        bl.addWidget(_btn(tr("Turn Off All"), "btnRed",  self._on_turn_off))
+        bl.addWidget(_btn(tr("Screensaver"),  "btnBlue", self._on_screensaver))
 
-        self._hdr_btn = QPushButton("HDR")
+        self._hdr_btn = QPushButton(tr("HDR"))
         self._hdr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._hdr_btn.clicked.connect(self._on_toggle_hdr)
         bl.addWidget(self._hdr_btn)
 
-        self._misc_btn = QPushButton("Misc  ▾")
+        self._misc_btn = QPushButton(tr("Misc  ▾"))
         self._misc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._misc_btn.clicked.connect(self._show_misc_menu)
         bl.addWidget(self._misc_btn)
@@ -3260,7 +3506,7 @@ class MainWindow(QMainWindow):
 
         bl.addStretch()
 
-        bl.addWidget(_btn("↻  Refresh", "btnGreen", self.refresh_monitors))
+        bl.addWidget(_btn(tr("↻  Refresh"), "btnGreen", self.refresh_monitors))
         root.addWidget(bar)
 
         self._build_misc_menu()
@@ -3307,10 +3553,10 @@ class MainWindow(QMainWindow):
 
     def _refresh_lock_btn(self):
         if self._layout_unlocked:
-            self._lock_btn.setText("🔓  Layout entsperrt")
+            self._lock_btn.setText(tr("🔓  Layout unlocked"))
             self._lock_btn.setObjectName("btnAccent")
         else:
-            self._lock_btn.setText("🔒  Layout")
+            self._lock_btn.setText(tr("🔒  Layout"))
             self._lock_btn.setObjectName("")
         self._lock_btn.style().unpolish(self._lock_btn)
         self._lock_btn.style().polish(self._lock_btn)
@@ -3346,45 +3592,51 @@ class MainWindow(QMainWindow):
     def _build_misc_menu(self):
         m = QMenu(self)
 
-        m.addAction("Extend displays",
+        m.addAction(tr("Extend displays"),
             lambda: subprocess.Popen(["DisplaySwitch.exe", "/extend"]))
-        m.addAction("Duplicate displays",
+        m.addAction(tr("Duplicate displays"),
             lambda: subprocess.Popen(["DisplaySwitch.exe", "/clone"]))
-        m.addAction("PC screen only",
+        m.addAction(tr("PC screen only"),
             lambda: subprocess.Popen(["DisplaySwitch.exe", "/internal"]))
-        m.addAction("Second screen only",
+        m.addAction(tr("Second screen only"),
             lambda: subprocess.Popen(["DisplaySwitch.exe", "/external"]))
         m.addSeparator()
 
-        self._rate_menu  = m.addMenu("Refresh Rate")
+        self._rate_menu  = m.addMenu(tr("Refresh Rate"))
         self._rate_menu.aboutToShow.connect(self._rebuild_rate_menu)
-        m.addAction("RTSS FPS Cap…", self._on_rtss_cap)
+        m.addAction(tr("RTSS FPS Cap…"), self._on_rtss_cap)
 
-        self._sound_menu = m.addMenu("Sound Output")
+        self._sound_menu = m.addMenu(tr("Sound Output"))
         self._sound_menu.aboutToShow.connect(self._rebuild_sound_menu)
 
-        m.addAction("Snipping Tool",
+        m.addAction(tr("Snipping Tool"),
             lambda: subprocess.Popen(["SnippingTool.exe"]))
         m.addSeparator()
-        m.addAction("Open Display Settings",
+        m.addAction(tr("Open Display Settings"),
             lambda: subprocess.Popen(["start", "ms-settings:display"], shell=True))
         m.addSeparator()
-        m.addAction("GPU Hotspot (Afterburner)…", self._on_afterburner)
-        m.addAction("Customize Design…", self._on_customize)
-        self._alerts_action = m.addAction("Warnungen bei kritischer Temperatur")
+        m.addAction(tr("GPU Hotspot (Afterburner)…"), self._on_afterburner)
+        m.addAction(tr("Customize Design…"), self._on_customize)
+        lang_menu = m.addMenu(tr("Language"))
+        for code, name in LANGS.items():
+            act = lang_menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(code == _LANG)
+            act.triggered.connect(lambda _checked=False, c=code: self._on_set_language(c))
+        self._alerts_action = m.addAction(tr("Alerts on critical temperature"))
         self._alerts_action.setCheckable(True)
         self._alerts_action.setChecked(self._alerts_enabled)
         self._alerts_action.triggered.connect(self._on_toggle_alerts)
-        m.addAction("Schwellen für Warnungen…", self._on_thresholds)
+        m.addAction(tr("Alert thresholds…"), self._on_thresholds)
         m.addSeparator()
 
-        self._autostart_action = m.addAction("Start with Windows")
+        self._autostart_action = m.addAction(tr("Start with Windows"))
         self._autostart_action.setCheckable(True)
         self._autostart_action.setChecked(get_autostart())
         self._autostart_action.triggered.connect(self._on_toggle_autostart)
         m.addSeparator()
-        m.addAction("Save Debug Info…", self._on_save_debug)
-        m.addAction("Check for Updates", self._on_check_update)
+        m.addAction(tr("Save Debug Info…"), self._on_save_debug)
+        m.addAction(tr("Check for Updates"), self._on_check_update)
 
         self._misc_menu = m
 
@@ -3408,14 +3660,14 @@ class MainWindow(QMainWindow):
             )
             a.triggered.connect(lambda _, h=hz: self._apply_rate(device, h))
         self._rate_menu.addSeparator()
-        self._rate_menu.addAction("Custom…",
+        self._rate_menu.addAction(tr("Custom…"),
             lambda: self._custom_rate(device))
 
     def _rebuild_sound_menu(self):
         self._sound_menu.clear()
         devices = get_audio_outputs()
         if not devices:
-            a = self._sound_menu.addAction("No devices found")
+            a = self._sound_menu.addAction(tr("No devices found"))
             a.setEnabled(False)
             return
         current = get_default_audio_output_id().lower()
@@ -3431,9 +3683,9 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip("System Manager")
 
         tray_menu = QMenu()
-        tray_menu.addAction("Show System Manager", self._show_window)
+        tray_menu.addAction(tr("Show System Manager"), self._show_window)
         tray_menu.addSeparator()
-        tray_menu.addAction("Exit", self._quit)
+        tray_menu.addAction(tr("Exit"), self._quit)
 
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
@@ -3446,8 +3698,8 @@ class MainWindow(QMainWindow):
         self._health_state = state
         col = {"warn": AMBER, "crit": RED}.get(state, GREEN)
         self._health_dot.setStyleSheet(f"background:{col}; border-radius:5px;")
-        self._health_dot.setToolTip({"warn": "Warnung: Temperatur erhöht",
-                                     "crit": "Kritisch: Temperatur zu hoch"}.get(state, "Alles im grünen Bereich"))
+        self._health_dot.setToolTip({"warn": tr("Warning: temperature elevated"),
+                                     "crit": tr("Critical: temperature too high")}.get(state, tr("All good")))
         tray = getattr(self, "_tray", None)
         if tray is not None:
             tray.setIcon(_make_tray_icon(state))
@@ -3472,7 +3724,7 @@ class MainWindow(QMainWindow):
                 parts.append(f"CPU {cpu_temp:.0f} °C")
             tray = getattr(self, "_tray", None)
             if tray is not None and parts:
-                tray.showMessage("Temperatur kritisch", " · ".join(parts),
+                tray.showMessage(tr("Temperature critical"), " · ".join(parts),
                                  QSystemTrayIcon.MessageIcon.Warning, 5000)
             self._last_alert = now
         self._was_crit = is_crit
@@ -3574,7 +3826,7 @@ class MainWindow(QMainWindow):
         tray = getattr(self, "_tray", None)
         if tray is not None:
             tray.setToolTip("System Manager" + ("\n" + "  ·  ".join(tip) if tip else ""))
-        self._uptime_lbl.setText(f"Laufzeit {_uptime_text()}")
+        self._uptime_lbl.setText(f"{tr('Uptime')} {_uptime_text()}")
         ab_ok = bool(sensors.get("ab_available"))
         self._ab_lbl.setText("Afterburner ✔" if ab_ok else "Afterburner –")
         self._ab_lbl.setStyleSheet(f"color:{FOREST if ab_ok else SUBTEXT}; font-size:9pt;")
@@ -3827,15 +4079,15 @@ class MainWindow(QMainWindow):
         disabled = get_disabled_devices({m["device"] for m in active})
 
         if not active and not disabled:
-            lbl = QLabel("No monitors detected.")
+            lbl = QLabel(tr("No monitors detected."))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(f"color:{SUBTEXT}; padding:32px;")
             self._monitor_layout.insertWidget(0, lbl)
-            self._displays_lbl.setText("keine Anzeige erkannt")
+            self._displays_lbl.setText(tr("No display detected"))
             return
 
         # Overview 'Displays' summary
-        res_parts = [f"{m['width']}×{m['height']}" + ("  (Primär)" if m["primary"] else "")
+        res_parts = [f"{m['width']}×{m['height']}" + (f"  ({tr('Primary')})" if m["primary"] else "")
                      for m in active]
         summary = f"{len(active)} aktiv"
         if res_parts:
@@ -3930,7 +4182,7 @@ class MainWindow(QMainWindow):
                 err or "Failed to update scheduled task.")
 
     def _on_check_update(self):
-        self.setWindowTitle("System Manager  —  Checking for updates…")
+        self.setWindowTitle(tr("System Manager  —  Checking for updates…"))
         self._misc_btn.setEnabled(False)            # no double-start while a check runs
         threading.Thread(target=self._do_update, daemon=True).start()
 
@@ -3944,7 +4196,8 @@ class MainWindow(QMainWindow):
         try:
             release = _latest_release()
         except Exception as e:
-            emit("error", f"Couldn't check for updates:\n{e}")
+            msg = tr("Couldn't check for updates:")
+            emit("error", f"{msg}\n{e}")
             return
         if is_up_to_date(release):
             emit("uptodate", "")
@@ -3956,23 +4209,31 @@ class MainWindow(QMainWindow):
     def _on_update_event(self, kind: str, payload: str):
         """GUI thread: show the worker's outcome."""
         if kind == "progress":
-            self.setWindowTitle(f"System Manager  —  Downloading update… {payload}")
+            self.setWindowTitle(f"{tr('System Manager  —  Downloading update…')} {payload}")
             return
         self.setWindowTitle("System Manager")
         self._misc_btn.setEnabled(True)
         if kind == "error":
-            QMessageBox.critical(self, "Update Failed", payload)
+            QMessageBox.critical(self, tr("Update Failed"), payload)
         elif kind == "uptodate":
-            QMessageBox.information(self, "Up to date",
-                                    "You're already running the latest version.")
+            QMessageBox.information(self, tr("Up to date"),
+                                    tr("You're already running the latest version."))
         elif kind == "done":
             self._finish_update(payload)
 
     def _finish_update(self, zip_path: str):
-        QMessageBox.information(self, "Update",
-                                "Update downloaded!\nThe app will now restart.")
+        QMessageBox.information(self, tr("Update"),
+                                tr("Update downloaded!\nThe app will now restart."))
         apply_update(zip_path)
         self._quit()
+
+    def _on_set_language(self, code: str):
+        """Misc → Language: persist the choice and restart so every label rebuilds."""
+        if code == _LANG or code not in LANGS:
+            return
+        self._settings["language"] = code
+        save_settings(self._settings)
+        self._restart()
 
     def _on_thresholds(self):
         dlg = ThresholdDialog(self, self._th)
