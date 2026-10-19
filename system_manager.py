@@ -803,6 +803,9 @@ _TR = {
     "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
         "DLL installiert.\n\nStarte MSI Afterburner neu und aktiviere das Plugin unter Einstellungen → Überwachung. Danach erkennt System Manager den Hotspot automatisch.",
     "Download failed:": "Download fehlgeschlagen:",
+    # energy
+    "Power Consumption (CPU + GPU)": "Stromverbrauch (CPU + GPU)", "Electricity price…": "Strompreis…",
+    "Electricity price": "Strompreis", "Price per kWh:": "Preis pro kWh:",
 },
 "es": {
     "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
@@ -877,6 +880,8 @@ _TR = {
     "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
         "DLL instalada.\n\nReinicia MSI Afterburner y activa el plugin en Ajustes → Monitorización. System Manager detectará el hotspot automáticamente.",
     "Download failed:": "La descarga falló:",
+    "Power Consumption (CPU + GPU)": "Consumo eléctrico (CPU + GPU)", "Electricity price…": "Precio de la electricidad…",
+    "Electricity price": "Precio de la electricidad", "Price per kWh:": "Precio por kWh:",
 },
 "fr": {
     "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
@@ -951,6 +956,8 @@ _TR = {
     "DLL installed.\n\nRestart MSI Afterburner and enable the plugin under Settings → Monitoring. System Manager will then detect the hotspot automatically.":
         "DLL installée.\n\nRedémarrez MSI Afterburner et activez le plugin dans Paramètres → Surveillance. System Manager détectera ensuite le hotspot automatiquement.",
     "Download failed:": "Le téléchargement a échoué :",
+    "Power Consumption (CPU + GPU)": "Consommation électrique (CPU + GPU)", "Electricity price…": "Prix de l'électricité…",
+    "Electricity price": "Prix de l'électricité", "Price per kWh:": "Prix par kWh :",
 },
 }
 
@@ -960,6 +967,28 @@ def tr(s: str) -> str:
     if _LANG == "en":
         return s
     return _TR.get(_LANG, {}).get(s, s)
+
+
+# ── Energy statistics store (per-day totals, ~400 days, survives restarts) ────
+_ENERGY_FILE = os.path.join(_FAN_NAMES_DIR, "energy.json")
+
+
+def load_energy() -> dict:
+    try:
+        with open(_ENERGY_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_energy(d: dict):
+    try:
+        os.makedirs(_FAN_NAMES_DIR, exist_ok=True)
+        with open(_ENERGY_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
 
 
 def afterburner_plugin_dir() -> str:
@@ -3245,6 +3274,13 @@ class MainWindow(QMainWindow):
         self._last_alert = 0.0
         self._alerts_enabled = bool(self._settings.get("alerts_enabled", True))
         self._th = _load_thresholds(self._settings)
+        # energy statistics (Power Consumption card)
+        self._energy = load_energy()
+        self._energy_last_ts = None
+        self._energy_prev_w = None
+        self._energy_last_save = time.time()
+        self._price = float(self._settings.get("price_per_kwh", 0.30))
+        self._currency = str(self._settings.get("currency", "€"))
 
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
@@ -3431,7 +3467,14 @@ class MainWindow(QMainWindow):
         )
         self._sensor_ram = SensorCard("RAM", tr("Memory"), ["Used", "Available", "Speed"], accent=FOREST, icon="ram")
         self._sensor_mb  = SensorCard("MB", tr("Motherboard"))
-        for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb):
+        self._sensor_pwr = SensorCard(
+            "PWR", tr("Power Consumption (CPU + GPU)"),
+            ["Now", "Average today", "Peak today", "Spikes today",
+             "Today", "Today cost", "This month", "Month cost",
+             "This year", "Year cost", "Peak CPU", "Peak GPU", "Price", "Yesterday"],
+            accent=AMBER, icon="bolt",
+        )
+        for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb, self._sensor_pwr):
             sensors_layout.addWidget(card)
         sensors_layout.addStretch()
         sensors_scroll.setWidget(sensors_content)
@@ -3628,6 +3671,7 @@ class MainWindow(QMainWindow):
         self._alerts_action.setChecked(self._alerts_enabled)
         self._alerts_action.triggered.connect(self._on_toggle_alerts)
         m.addAction(tr("Alert thresholds…"), self._on_thresholds)
+        m.addAction(tr("Electricity price…"), self._on_price)
         m.addSeparator()
 
         self._autostart_action = m.addAction(tr("Start with Windows"))
@@ -3744,6 +3788,7 @@ class MainWindow(QMainWindow):
         self.hide()
 
     def _quit(self):
+        save_energy(self._energy)
         self._tray.hide()
         QApplication.quit()
 
@@ -3830,6 +3875,7 @@ class MainWindow(QMainWindow):
         ab_ok = bool(sensors.get("ab_available"))
         self._ab_lbl.setText("Afterburner ✔" if ab_ok else "Afterburner –")
         self._ab_lbl.setStyleSheet(f"color:{FOREST if ab_ok else SUBTEXT}; font-size:9pt;")
+        self._update_energy(cpu_power, gpu_power)
         self._apply_hdr_color(hdr)
         self._update_fans(fans)
         self._update_cooling(fans)
@@ -4226,6 +4272,85 @@ class MainWindow(QMainWindow):
                                 tr("Update downloaded!\nThe app will now restart."))
         apply_update(zip_path)
         self._quit()
+
+    # ── Energy statistics: accumulate CPU+GPU watts per day, peaks and spikes ──
+    def _update_energy(self, cpu_power, gpu_power):
+        parts = [p for p in (cpu_power, gpu_power) if p is not None]
+        if not parts:
+            return
+        w = float(sum(parts))
+        now = time.time()
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        days = self._energy.setdefault("days", {})
+        d = days.get(day)
+        if d is None:
+            d = days[day] = {"wh": 0.0, "sum_w": 0.0, "n": 0, "peak_w": 0.0, "peak_ts": "",
+                             "peak_cpu": 0.0, "peak_gpu": 0.0, "spikes": 0, "max_jump": 0.0}
+            self._energy_prev_w = None
+            for k in sorted(days)[:-400]:          # keep ~400 days
+                del days[k]
+        if self._energy_last_ts is not None:
+            dt = min(max(now - self._energy_last_ts, 0.0), 10.0)   # cap gaps (sleep/resume)
+            d["wh"] += w * dt / 3600.0
+        self._energy_last_ts = now
+        d["sum_w"] += w
+        d["n"] += 1
+        if w > d["peak_w"]:
+            d["peak_w"] = w
+            d["peak_ts"] = time.strftime("%H:%M", time.localtime(now))
+        if cpu_power is not None and float(cpu_power) > d["peak_cpu"]:
+            d["peak_cpu"] = float(cpu_power)
+        if gpu_power is not None and float(gpu_power) > d["peak_gpu"]:
+            d["peak_gpu"] = float(gpu_power)
+        avg = d["sum_w"] / d["n"] if d["n"] else 0.0
+        if self._energy_prev_w is not None:
+            jump = w - self._energy_prev_w
+            if jump > d["max_jump"]:
+                d["max_jump"] = jump
+            thr = 1.5 * avg                        # spike = crossing 1.5× the day's average
+            if avg > 0 and w > thr and self._energy_prev_w <= thr:
+                d["spikes"] += 1
+        self._energy_prev_w = w
+        if now - self._energy_last_save > 60:
+            save_energy(self._energy)
+            self._energy_last_save = now
+        self._refresh_energy_card(w, d, days, day)
+
+    def _refresh_energy_card(self, w, d, days, day):
+        price, cur = self._price, self._currency
+
+        def kwh(keys):
+            return sum(days[k]["wh"] for k in keys if k in days) / 1000.0
+
+        today_kwh = d["wh"] / 1000.0
+        month_kwh = kwh([k for k in days if k[:7] == day[:7]])
+        year_kwh = kwh([k for k in days if k[:4] == day[:4]])
+        y = days.get(time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400)))
+        avg = d["sum_w"] / d["n"] if d["n"] else 0.0
+        c = self._sensor_pwr
+        c.set_summary(f"{w:.0f} W  ·  {today_kwh:.2f} kWh  ·  ≈ {today_kwh * price:.2f} {cur}")
+        c.set_value("Now", f"{w:.0f} W")
+        c.set_value("Average today", f"{avg:.0f} W")
+        c.set_value("Peak today", f"{d['peak_w']:.0f} W · {d['peak_ts']}" if d["peak_ts"] else "—")
+        c.set_value("Spikes today", f"{d['spikes']} · max +{d['max_jump']:.0f} W/s")
+        c.set_value("Today", f"{today_kwh:.2f} kWh")
+        c.set_value("Today cost", f"{today_kwh * price:.2f} {cur}")
+        c.set_value("This month", f"{month_kwh:.2f} kWh")
+        c.set_value("Month cost", f"{month_kwh * price:.2f} {cur}")
+        c.set_value("This year", f"{year_kwh:.1f} kWh")
+        c.set_value("Year cost", f"{year_kwh * price:.2f} {cur}")
+        c.set_value("Peak CPU", f"{d['peak_cpu']:.0f} W")
+        c.set_value("Peak GPU", f"{d['peak_gpu']:.0f} W")
+        c.set_value("Price", f"{price:.2f} {cur}/kWh")
+        c.set_value("Yesterday", f"{y['wh'] / 1000:.2f} kWh · {y['wh'] / 1000 * price:.2f} {cur}" if y else "—")
+
+    def _on_price(self):
+        val, ok = QInputDialog.getDouble(self, tr("Electricity price"), tr("Price per kWh:"),
+                                         self._price, 0.01, 5.0, 2)
+        if ok:
+            self._price = float(val)
+            self._settings["price_per_kwh"] = self._price
+            save_settings(self._settings)
 
     def _on_set_language(self, code: str):
         """Misc → Language: persist the choice and restart so every label rebuilds."""
