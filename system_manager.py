@@ -315,6 +315,12 @@ def get_temperatures():
             "gpu_pcie_load":    _round(data.get("gpu_pcie_load"), 0),
             "mb_chipset_temp":  _round(data.get("mb_chipset_temp")),
             "mb_vrm_temp":      _round(data.get("mb_vrm_temp")),
+            "storage": [
+                {"name": s.get("name"), "temp": _round(s.get("temp")),
+                 "used_pct": _round(s.get("used_pct")), "health_pct": _round(s.get("health_pct")),
+                 "read_gb": _round(s.get("read_gb")), "written_gb": _round(s.get("written_gb"))}
+                for s in (data.get("storage") or [])
+            ],
             "mb_voltages": {
                 k: _round(v, 2) for k, v in data.get("mb_voltages", {}).items()
             },
@@ -806,6 +812,7 @@ _TR = {
     # energy
     "Power Consumption (CPU + GPU)": "Stromverbrauch (CPU + GPU)", "Electricity price…": "Strompreis…",
     "Electricity price": "Strompreis", "Price per kWh:": "Preis pro kWh:",
+    "Storage": "Speicher", "drives": "Laufwerke", "No drives detected": "Keine Laufwerke erkannt",
 },
 "es": {
     "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
@@ -882,6 +889,7 @@ _TR = {
     "Download failed:": "La descarga falló:",
     "Power Consumption (CPU + GPU)": "Consumo eléctrico (CPU + GPU)", "Electricity price…": "Precio de la electricidad…",
     "Electricity price": "Precio de la electricidad", "Price per kWh:": "Precio por kWh:",
+    "Storage": "Almacenamiento", "drives": "unidades", "No drives detected": "No se detectaron unidades",
 },
 "fr": {
     "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
@@ -958,6 +966,7 @@ _TR = {
     "Download failed:": "Le téléchargement a échoué :",
     "Power Consumption (CPU + GPU)": "Consommation électrique (CPU + GPU)", "Electricity price…": "Prix de l'électricité…",
     "Electricity price": "Prix de l'électricité", "Price per kWh:": "Prix par kWh :",
+    "Storage": "Stockage", "drives": "disques", "No drives detected": "Aucun disque détecté",
 },
 }
 
@@ -1961,6 +1970,12 @@ class IconLabel(QWidget):
                 blade.cubicTo(QPointF(7, -6.5), QPointF(4, -3.2), QPointF(0, -3))
                 p.drawPath(blade)
                 p.restore()
+        elif n == "disk":
+            p.drawRoundedRect(QRectF(2.5, 5, 19, 14), 2, 2)
+            p.drawEllipse(QPointF(8.5, 12), 3.2, 3.2)
+            p.drawLine(QPointF(14.5, 9.5), QPointF(19, 9.5))
+            p.drawLine(QPointF(14.5, 12), QPointF(19, 12))
+            p.drawLine(QPointF(14.5, 14.5), QPointF(17, 14.5))
         elif n == "mon":
             p.drawRoundedRect(QRectF(2.5, 4, 19, 12.5), 2, 2)
             p.drawLine(QPointF(9, 20.5), QPointF(15, 20.5))
@@ -3467,6 +3482,7 @@ class MainWindow(QMainWindow):
         )
         self._sensor_ram = SensorCard("RAM", tr("Memory"), ["Used", "Available", "Speed"], accent=FOREST, icon="ram")
         self._sensor_mb  = SensorCard("MB", tr("Motherboard"))
+        self._sensor_ssd = SensorCard("SSD", tr("Storage"), accent=BLUE, icon="disk")
         self._sensor_pwr = SensorCard(
             "PWR", tr("Power Consumption (CPU + GPU)"),
             ["Now", "Average today", "Peak today", "Spikes today",
@@ -3474,7 +3490,7 @@ class MainWindow(QMainWindow):
              "This year", "Year cost", "Peak CPU", "Peak GPU", "Price", "Yesterday"],
             accent=AMBER, icon="bolt",
         )
-        for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb, self._sensor_pwr):
+        for card in (self._sensor_cpu, self._sensor_gpu, self._sensor_ram, self._sensor_mb, self._sensor_ssd, self._sensor_pwr):
             sensors_layout.addWidget(card)
         sensors_layout.addStretch()
         sensors_scroll.setWidget(sensors_content)
@@ -4097,6 +4113,28 @@ class MainWindow(QMainWindow):
             self._sensor_mb.set_value("VRM", self._fmt(mb_vrm, "°C"))
         for rail, value in sensors.get("mb_voltages", {}).items():
             self._sensor_mb.set_value(rail, self._fmt(value, " V", 2))
+
+        # Storage (NVMe/SATA): one row of cells per drive — Temp · Used · Health · Written
+        drives = sensors.get("storage") or []
+        if drives:
+            temps = [d["temp"] for d in drives if d.get("temp") is not None]
+            summ = f"{len(drives)} {tr('drives')}"
+            if temps:
+                summ += f"  ·  max {max(temps):.0f}°C"
+            self._sensor_ssd.set_summary(summ)
+            for d in drives:
+                short = (d.get("name") or "?").strip()
+                if len(short) > 22:
+                    short = short[:21] + "…"
+                self._sensor_ssd.set_value(f"{short} · Temp",   self._fmt(d.get("temp"), "°C", 0))
+                self._sensor_ssd.set_value(f"{short} · Used",   self._fmt(d.get("used_pct"), " %", 0))
+                self._sensor_ssd.set_value(f"{short} · Health", self._fmt(d.get("health_pct"), " %", 0))
+                wr = d.get("written_gb")
+                if wr is not None:
+                    self._sensor_ssd.set_value(f"{short} · Written",
+                                               f"{wr / 1024:.2f} TB" if wr >= 1024 else f"{wr:.0f} GB")
+        else:
+            self._sensor_ssd.set_summary(tr("No drives detected"))
 
     @staticmethod
     def _fmt(value, unit: str, digits: int = 1) -> str:

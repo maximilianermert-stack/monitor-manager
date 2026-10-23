@@ -10,6 +10,7 @@ var computer = new Computer
     IsCpuEnabled         = true,
     IsGpuEnabled         = true,
     IsMotherboardEnabled = true,
+    IsStorageEnabled     = true,
 };
 computer.Open();
 
@@ -40,6 +41,7 @@ var mbVoltages = new System.Collections.Generic.Dictionary<string, float>();
 var cpuCoreData = new System.Collections.Generic.Dictionary<int, (float? clock, float? load)>();
 
 var fans    = new System.Collections.Generic.List<object>();
+var storage = new System.Collections.Generic.List<object>();
 var debugHw = new System.Collections.Generic.List<string>();
 
 // Systems with an AMD/Intel CPU often expose an integrated GPU alongside the
@@ -331,6 +333,47 @@ try
 }
 catch { }
 
+// ── Storage (NVMe/SATA): temperature, used space, health, data read/written ──
+// Hardware was already Update()d in the main loop above; SMART reads are slow,
+// so we only read the sensors here.
+foreach (var hw in computer.Hardware)
+{
+    if (hw.HardwareType != HardwareType.Storage) continue;
+    try
+    {
+        float? temp = null, used = null, readGb = null, writtenGb = null;
+        float? remainingLife = null, pctUsed = null, spare = null;
+        foreach (var s in hw.Sensors)
+        {
+            if (s.Value == null) continue;
+            float v = s.Value.Value;
+            string n = (s.Name ?? "").ToLowerInvariant();
+            switch (s.SensorType)
+            {
+                case SensorType.Temperature:
+                    if (temp == null || n == "temperature") temp = v;
+                    break;
+                case SensorType.Load:
+                    if (n.Contains("used space")) used = v;
+                    break;
+                case SensorType.Level:
+                    if (n.Contains("remaining life")) remainingLife = v;        // SATA SSD
+                    else if (n.Contains("percentage used")) pctUsed = v;        // NVMe wear
+                    else if (n == "available spare") spare = v;                 // NVMe fallback
+                    break;
+                case SensorType.Data:
+                    if (n.Contains("read")) readGb = v;
+                    else if (n.Contains("written")) writtenGb = v;
+                    break;
+            }
+        }
+        float? health = remainingLife ?? (pctUsed != null ? 100f - pctUsed : spare);
+        storage.Add(new { name = hw.Name, temp = temp, used_pct = used, health_pct = health,
+                          read_gb = readGb, written_gb = writtenGb });
+    }
+    catch { }
+}
+
 var cpuCores = System.Linq.Enumerable.Select(
     System.Linq.Enumerable.OrderBy(cpuCoreData, kv => kv.Key),
     kv => new { index = kv.Key, clock = kv.Value.clock, load = kv.Value.load }
@@ -359,6 +402,7 @@ Console.WriteLine(JsonConvert.SerializeObject(new
     mb_vrm_temp      = mbVrmTemp,
     mb_voltages      = mbVoltages,
     fans             = fans,
+    storage          = storage,
     ab_available     = afterburnerAvailable,
     ab_hotspot       = afterburnerHotspot,
     ab_mem_junction  = afterburnerMemJunction,
