@@ -4493,17 +4493,9 @@ class MainWindow(QMainWindow):
         self._periph = list(items or [])
         self._refresh_ctrl_chip(self._last_battery)
 
-    def _periph_lines(self):
-        """Rich-text lines '⌨ Keyboard 85 %' / '🖱 Mouse 62 %' for devices with a battery."""
-        lines = []
-        for kind, icon, label in (("keyboard", "⌨", tr("Keyboard")), ("mouse", "🖱", tr("Mouse"))):
-            dev = next((d for d in self._periph if d["kind"] == kind and d["battery"] is not None), None)
-            if dev is None:
-                continue
-            pct = dev["battery"]
-            col = RED if pct <= 20 else AMBER if pct <= 35 else SUBTEXT
-            lines.append(f'<span style="color:{col};">{icon} {label} {pct} %</span>')
-        return lines
+    # Keyboard/mouse battery lines were tried (Bluetooth property) and dropped
+    # again on 2026-11-03 — the user's Logitech gear needs vendor software anyway.
+    # The probe is kept only for the exact % of a Bluetooth-paired controller.
 
     _XINPUT_BARS = {"Empty": "▯▯▯▯", "Low": "▮▯▯▯", "Medium": "▮▮▯▯", "Full": "▮▮▮▮"}
 
@@ -4522,7 +4514,6 @@ class MainWindow(QMainWindow):
             lines.append("Xbox Wireless" + (f"  {bars}" if bars else ""))
         else:
             main = "—"
-        lines += self._periph_lines()
         self._chip_ctrl.set_value(main, "<br>".join(lines))
 
     def _on_set_language(self, code: str):
