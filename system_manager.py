@@ -4498,6 +4498,7 @@ class MainWindow(QMainWindow):
     # The probe is kept only for the exact % of a Bluetooth-paired controller.
 
     _XINPUT_BARS = {"Empty": "▯▯▯▯", "Low": "▮▯▯▯", "Medium": "▮▮▯▯", "Full": "▮▮▮▮"}
+    _XINPUT_PCT  = {"Empty": 25, "Low": 50, "Medium": 75, "Full": 100}   # 4 levels → 25 % steps
 
     def _refresh_ctrl_chip(self, battery):
         """Big value: exact % from a Bluetooth-paired controller when Windows
@@ -4510,7 +4511,8 @@ class MainWindow(QMainWindow):
             lines.append("Xbox Wireless")
         elif battery:
             bars = self._XINPUT_BARS.get(battery)
-            main = tr(battery) if bars else battery          # "Full" → "Voll"…, or "USB"
+            pct = self._XINPUT_PCT.get(battery)
+            main = f"{pct} %" if pct is not None else battery   # level → 25/50/75/100 %, or "USB"
             lines.append("Xbox Wireless" + (f"  {bars}" if bars else ""))
         else:
             main = "—"
