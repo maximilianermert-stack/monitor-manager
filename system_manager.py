@@ -206,11 +206,17 @@ def get_board_info() -> dict:
 
 
 def get_xbox_battery():
-    """Return battery level string for first connected wireless Xbox controller, or None."""
+    """Battery of the first connected wireless Xbox controller, or None.
+
+    XInput only reports FOUR coarse levels (Empty/Low/Medium/Full) — not a
+    percentage. 'Full' is reported for a large part of the charge, so we return
+    the level name (an English key, translated at display time) rather than a
+    made-up percent. Bluetooth-paired controllers get an exact % from the
+    peripherals probe instead (see _refresh_ctrl_chip)."""
     BATTERY_DEVTYPE_GAMEPAD   = 0x00
     BATTERY_TYPE_DISCONNECTED = 0x00
     BATTERY_TYPE_WIRED        = 0x01
-    _LEVELS = ("0%", "33%", "67%", "100%")
+    _LEVELS = ("Empty", "Low", "Medium", "Full")
     try:
         try:
             xinput = ctypes.WinDLL("XInput1_4.dll")
@@ -814,6 +820,7 @@ _TR = {
     "Electricity price": "Strompreis", "Price per kWh:": "Preis pro kWh:",
     "Storage": "Speicher", "drives": "Laufwerke", "No drives detected": "Keine Laufwerke erkannt",
     "Keyboard": "Tastatur", "Mouse": "Maus",
+    "Empty": "Leer", "Low": "Niedrig", "Medium": "Mittel", "Full": "Voll",
 },
 "es": {
     "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
@@ -892,6 +899,7 @@ _TR = {
     "Electricity price": "Precio de la electricidad", "Price per kWh:": "Precio por kWh:",
     "Storage": "Almacenamiento", "drives": "unidades", "No drives detected": "No se detectaron unidades",
     "Keyboard": "Teclado", "Mouse": "Ratón",
+    "Empty": "Vacía", "Low": "Baja", "Medium": "Media", "Full": "Llena",
 },
 "fr": {
     "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
@@ -970,6 +978,7 @@ _TR = {
     "Electricity price": "Prix de l'électricité", "Price per kWh:": "Prix par kWh :",
     "Storage": "Stockage", "drives": "disques", "No drives detected": "Aucun disque détecté",
     "Keyboard": "Clavier", "Mouse": "Souris",
+    "Empty": "Vide", "Low": "Faible", "Medium": "Moyenne", "Full": "Pleine",
 },
 }
 
@@ -1024,8 +1033,13 @@ _KB_WORDS = ("keyboard", "tastatur", "keys", "kbd", "k380", "k780", "k860", "cla
 _MS_WORDS = ("mouse", "maus", "mx master", "mx anywhere", "trackball", "trackpad", "souris", "ratón", "g pro", "g502", "g305")
 
 
+_CTRL_WORDS = ("xbox", "controller", "gamepad", "dualsense", "dualshock", "wireless controller")
+
+
 def _periph_kind(name: str, cls: str) -> str:
     low = (name or "").lower()
+    if any(w in low for w in _CTRL_WORDS):
+        return "controller"
     if cls == "Keyboard" or any(w in low for w in _KB_WORDS):
         return "keyboard"
     if cls == "Mouse" or any(w in low for w in _MS_WORDS):
@@ -4491,9 +4505,25 @@ class MainWindow(QMainWindow):
             lines.append(f'<span style="color:{col};">{icon} {label} {pct} %</span>')
         return lines
 
+    _XINPUT_BARS = {"Empty": "▯▯▯▯", "Low": "▮▯▯▯", "Medium": "▮▮▯▯", "Full": "▮▮▮▮"}
+
     def _refresh_ctrl_chip(self, battery):
-        lines = (["Xbox Wireless"] if battery else []) + self._periph_lines()
-        self._chip_ctrl.set_value(battery if battery else "—", "<br>".join(lines))
+        """Big value: exact % from a Bluetooth-paired controller when Windows
+        reports one; otherwise XInput's coarse level ('Full' …) with a 4-segment
+        bar so it's obvious it isn't a measured percentage."""
+        bt = next((d for d in self._periph if d["kind"] == "controller" and d["battery"] is not None), None)
+        lines = []
+        if bt is not None:
+            main = f"{bt['battery']} %"
+            lines.append("Xbox Wireless")
+        elif battery:
+            bars = self._XINPUT_BARS.get(battery)
+            main = tr(battery) if bars else battery          # "Full" → "Voll"…, or "USB"
+            lines.append("Xbox Wireless" + (f"  {bars}" if bars else ""))
+        else:
+            main = "—"
+        lines += self._periph_lines()
+        self._chip_ctrl.set_value(main, "<br>".join(lines))
 
     def _on_set_language(self, code: str):
         """Misc → Language: persist the choice and restart so every label rebuilds."""
