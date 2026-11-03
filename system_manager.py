@@ -813,6 +813,7 @@ _TR = {
     "Power Consumption (CPU + GPU)": "Stromverbrauch (CPU + GPU)", "Electricity price…": "Strompreis…",
     "Electricity price": "Strompreis", "Price per kWh:": "Preis pro kWh:",
     "Storage": "Speicher", "drives": "Laufwerke", "No drives detected": "Keine Laufwerke erkannt",
+    "Keyboard": "Tastatur", "Mouse": "Maus",
 },
 "es": {
     "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
@@ -890,6 +891,7 @@ _TR = {
     "Power Consumption (CPU + GPU)": "Consumo eléctrico (CPU + GPU)", "Electricity price…": "Precio de la electricidad…",
     "Electricity price": "Precio de la electricidad", "Price per kWh:": "Precio por kWh:",
     "Storage": "Almacenamiento", "drives": "unidades", "No drives detected": "No se detectaron unidades",
+    "Keyboard": "Teclado", "Mouse": "Ratón",
 },
 "fr": {
     "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
@@ -967,6 +969,7 @@ _TR = {
     "Power Consumption (CPU + GPU)": "Consommation électrique (CPU + GPU)", "Electricity price…": "Prix de l'électricité…",
     "Electricity price": "Prix de l'électricité", "Price per kWh:": "Prix par kWh :",
     "Storage": "Stockage", "drives": "disques", "No drives detected": "Aucun disque détecté",
+    "Keyboard": "Clavier", "Mouse": "Souris",
 },
 }
 
@@ -998,6 +1001,68 @@ def save_energy(d: dict):
             json.dump(d, f)
     except Exception:
         pass
+
+
+# ── Wireless peripherals (keyboard / mouse battery) ───────────────────────────
+# Windows exposes the battery of Bluetooth-paired devices as a PnP property
+# (DEVPKEY_Bluetooth_Battery). 2.4 GHz dongles need vendor protocols (e.g.
+# Logitech HID++) — the debug dump lists VID_xxxx so we can add those later.
+_PERIPH_PS = r"""
+$key='{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2'
+$out=@()
+Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+  Where-Object { $_.Class -in @('Keyboard','Mouse','HIDClass','Bluetooth') } |
+  ForEach-Object {
+    $b=$null
+    try { $b=(Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName $key -ErrorAction SilentlyContinue).Data } catch {}
+    $out += [pscustomobject]@{ Name=$_.FriendlyName; Class=$_.Class; Id=$_.InstanceId; Battery=$b }
+  }
+$out | ConvertTo-Json -Compress
+"""
+
+_KB_WORDS = ("keyboard", "tastatur", "keys", "kbd", "k380", "k780", "k860", "clavier", "teclado")
+_MS_WORDS = ("mouse", "maus", "mx master", "mx anywhere", "trackball", "trackpad", "souris", "ratón", "g pro", "g502", "g305")
+
+
+def _periph_kind(name: str, cls: str) -> str:
+    low = (name or "").lower()
+    if cls == "Keyboard" or any(w in low for w in _KB_WORDS):
+        return "keyboard"
+    if cls == "Mouse" or any(w in low for w in _MS_WORDS):
+        return "mouse"
+    return "other"
+
+
+def probe_peripherals(return_raw: bool = False):
+    """List input/Bluetooth devices with any battery % Windows knows about."""
+    if not sys.platform.startswith("win"):
+        return ("", []) if return_raw else []
+    raw = ""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", _PERIPH_PS],
+            capture_output=True, text=True, timeout=25, creationflags=CREATE_NO_WINDOW,
+        )
+        raw = (result.stdout or "").strip()
+        data = json.loads(raw) if raw else []
+        if isinstance(data, dict):
+            data = [data]
+    except Exception:
+        data = []
+    items = []
+    for d in data or []:
+        if not isinstance(d, dict):
+            continue
+        name, cls = d.get("Name") or "", d.get("Class") or ""
+        bat = d.get("Battery")
+        try:
+            bat = int(bat) if bat is not None else None
+        except Exception:
+            bat = None
+        items.append({"name": name, "cls": cls, "id": d.get("Id") or "",
+                      "battery": bat, "kind": _periph_kind(name, cls)})
+    return (raw, items) if return_raw else items
 
 
 def afterburner_plugin_dir() -> str:
@@ -3267,6 +3332,7 @@ class ThresholdDialog(QDialog):
 class MainWindow(QMainWindow):
     _temps_signal = pyqtSignal(tuple, tuple, object, bool)
     _update_signal = pyqtSignal(str, str)   # (kind, payload) from the update worker thread
+    _periph_signal = pyqtSignal(object)     # list of peripheral dicts from the probe thread
 
     def __init__(self):
         super().__init__()
@@ -3300,6 +3366,14 @@ class MainWindow(QMainWindow):
         self._worker  = TempWorker()
         self._worker.ready.connect(self._apply_temps)
         self._update_signal.connect(self._on_update_event)
+        # wireless keyboard/mouse battery: probe in a thread, every 60 s (slow PowerShell call)
+        self._periph = []
+        self._last_battery = None
+        self._periph_signal.connect(self._on_periph)
+        self._periph_timer = QTimer(self)
+        self._periph_timer.timeout.connect(self._start_periph_poll)
+        self._periph_timer.start(60000)
+        QTimer.singleShot(3000, self._start_periph_poll)
 
         self._setup_ui()
         self._setup_tray()
@@ -3868,8 +3942,8 @@ class MainWindow(QMainWindow):
         )
         self._chip_sys.spark.push(total_w)
 
-        self._chip_ctrl.set_value(battery if battery else "—",
-                                  "Xbox Wireless" if battery else "")
+        self._last_battery = battery
+        self._refresh_ctrl_chip(battery)
 
         # Overall health → header dot + tray icon + (rate-limited) alert
         states = (cpu_state, gpu_state, hot_state)
@@ -4390,6 +4464,37 @@ class MainWindow(QMainWindow):
             self._settings["price_per_kwh"] = self._price
             save_settings(self._settings)
 
+    # ── Wireless peripherals in the Controller chip ────────────────────────────
+    def _start_periph_poll(self):
+        threading.Thread(target=self._poll_periph, daemon=True).start()
+
+    def _poll_periph(self):
+        try:
+            items = probe_peripherals()
+        except Exception:
+            items = []
+        self._periph_signal.emit(items)
+
+    def _on_periph(self, items):
+        self._periph = list(items or [])
+        self._refresh_ctrl_chip(self._last_battery)
+
+    def _periph_lines(self):
+        """Rich-text lines '⌨ Keyboard 85 %' / '🖱 Mouse 62 %' for devices with a battery."""
+        lines = []
+        for kind, icon, label in (("keyboard", "⌨", tr("Keyboard")), ("mouse", "🖱", tr("Mouse"))):
+            dev = next((d for d in self._periph if d["kind"] == kind and d["battery"] is not None), None)
+            if dev is None:
+                continue
+            pct = dev["battery"]
+            col = RED if pct <= 20 else AMBER if pct <= 35 else SUBTEXT
+            lines.append(f'<span style="color:{col};">{icon} {label} {pct} %</span>')
+        return lines
+
+    def _refresh_ctrl_chip(self, battery):
+        lines = (["Xbox Wireless"] if battery else []) + self._periph_lines()
+        self._chip_ctrl.set_value(battery if battery else "—", "<br>".join(lines))
+
     def _on_set_language(self, code: str):
         """Misc → Language: persist the choice and restart so every label rebuilds."""
         if code == _LANG or code not in LANGS:
@@ -4456,6 +4561,18 @@ class MainWindow(QMainWindow):
                 lines.append(f"\n(could not parse JSON: {e})")
         except Exception as e:
             lines.append(f"\nERROR running TempReader: {e!r}")
+
+        # Wireless peripherals: what Windows knows about keyboard/mouse batteries.
+        # VID_046D in the Id = Logitech (candidate for HID++ if no battery shows).
+        lines.append("\n--- PERIPHERALS (Bluetooth battery property) ---")
+        try:
+            raw, items = probe_peripherals(return_raw=True)
+            for it in items:
+                lines.append(f"  {it['kind']:8s} bat={str(it['battery']):>4}  {it['cls']:9s} {it['name']}  [{it['id']}]")
+            lines.append("\n--- PERIPHERALS (raw JSON) ---")
+            lines.append(raw or "(empty)")
+        except Exception as e:
+            lines.append(f"(probe failed: {e!r})")
 
         text = "\n".join(lines)
         default = os.path.join(os.path.expanduser("~"), "SystemManager_debug.txt")
