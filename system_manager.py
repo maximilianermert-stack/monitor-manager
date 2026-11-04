@@ -3633,7 +3633,6 @@ class MainWindow(QMainWindow):
             b.clicked.connect(slot)
             return b
 
-        bl.addWidget(_btn(tr("Turn Off All"), "btnRed",  self._on_turn_off))
         bl.addWidget(_btn(tr("Screensaver"),  "btnBlue", self._on_screensaver))
 
         self._hdr_btn = QPushButton(tr("HDR"))
