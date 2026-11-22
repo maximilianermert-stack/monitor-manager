@@ -821,6 +821,10 @@ _TR = {
     "Storage": "Speicher", "drives": "Laufwerke", "No drives detected": "Keine Laufwerke erkannt",
     "Keyboard": "Tastatur", "Mouse": "Maus",
     "Empty": "Leer", "Low": "Niedrig", "Medium": "Mittel", "Full": "Voll",
+    "stopped": "steht", "Avg FPS": "Ø FPS", "Average": "Durchschnitt", "Min": "Min", "Max": "Max", "samples": "Messwerte",
+    "Measure FPS for 30 s via RivaTuner and show the average": "FPS 30 s lang über RivaTuner messen und den Durchschnitt anzeigen",
+    "No FPS source found. RivaTuner Statistics Server must be running and a game rendering.": "Keine FPS-Quelle gefunden. RivaTuner Statistics Server muss laufen und ein Spiel rendern.",
+    "No frames were measured.": "Es wurden keine Frames gemessen.",
 },
 "es": {
     "Overview": "Resumen", "Fans": "Ventiladores", "Monitors": "Monitores",
@@ -900,6 +904,10 @@ _TR = {
     "Storage": "Almacenamiento", "drives": "unidades", "No drives detected": "No se detectaron unidades",
     "Keyboard": "Teclado", "Mouse": "Ratón",
     "Empty": "Vacía", "Low": "Baja", "Medium": "Media", "Full": "Llena",
+    "stopped": "parado", "Avg FPS": "FPS medios", "Average": "Media", "Min": "Mín", "Max": "Máx", "samples": "muestras",
+    "Measure FPS for 30 s via RivaTuner and show the average": "Medir FPS durante 30 s con RivaTuner y mostrar la media",
+    "No FPS source found. RivaTuner Statistics Server must be running and a game rendering.": "No se encontró fuente de FPS. RivaTuner Statistics Server debe estar en ejecución y un juego renderizando.",
+    "No frames were measured.": "No se midieron fotogramas.",
 },
 "fr": {
     "Overview": "Aperçu", "Fans": "Ventilateurs", "Monitors": "Écrans",
@@ -979,6 +987,10 @@ _TR = {
     "Storage": "Stockage", "drives": "disques", "No drives detected": "Aucun disque détecté",
     "Keyboard": "Clavier", "Mouse": "Souris",
     "Empty": "Vide", "Low": "Faible", "Medium": "Moyenne", "Full": "Pleine",
+    "stopped": "arrêté", "Avg FPS": "FPS moy.", "Average": "Moyenne", "Min": "Min", "Max": "Max", "samples": "mesures",
+    "Measure FPS for 30 s via RivaTuner and show the average": "Mesurer les FPS pendant 30 s via RivaTuner et afficher la moyenne",
+    "No FPS source found. RivaTuner Statistics Server must be running and a game rendering.": "Aucune source FPS trouvée. RivaTuner Statistics Server doit être lancé et un jeu en cours de rendu.",
+    "No frames were measured.": "Aucune image n'a été mesurée.",
 },
 }
 
@@ -1151,6 +1163,46 @@ def detect_nvidia_device_id():
         return None
 
 # ── RTSS FPS cap ──────────────────────────────────────────────────────────────
+def read_rtss_fps():
+    """Current FPS of the foreground 3D app from RivaTuner's shared memory
+    (RTSSSharedMemoryV2). Returns (fps, app_name) or (None, None) when RTSS
+    isn't running or no app is being rendered. Read-only, no driver."""
+    if not sys.platform.startswith("win"):
+        return None, None
+    import mmap, struct
+    try:
+        m = mmap.mmap(-1, 0x10000, tagname="RTSSSharedMemoryV2", access=mmap.ACCESS_READ)
+    except Exception:
+        return None, None
+    try:
+        sig, ver, app_entry_size, app_arr_off, app_arr_size = struct.unpack_from("<IIIII", m, 0)
+        if sig != 0x53535452 or ver < 0x00020000:          # 'RTSS', v2+
+            return None, None
+        best = (None, None)
+        for i in range(min(app_arr_size, 32)):
+            off = app_arr_off + i * app_entry_size
+            if off + 0x120 > m.size():
+                break
+            pid = struct.unpack_from("<I", m, off)[0]
+            if not pid:
+                continue
+            name = m[off + 4: off + 4 + 260].split(b"\0", 1)[0].decode("mbcs", "ignore")
+            # dwFrames/dwFrameTime right after the 260-byte name block + 3 dwords (flags, time0, time1)
+            flags, t0, t1, frames = struct.unpack_from("<IIII", m, off + 4 + 260)
+            if frames and t1 > t0:
+                fps = frames * 1000.0 / (t1 - t0)
+                if 0 < fps < 2000:
+                    best = (fps, os.path.basename(name) or name)
+        return best
+    except Exception:
+        return None, None
+    finally:
+        try:
+            m.close()
+        except Exception:
+            pass
+
+
 def _find_rtss_path() -> str:
     for key_path in [
         r"SOFTWARE\WOW6432Node\Unwinder\RTSS",
@@ -3640,6 +3692,12 @@ class MainWindow(QMainWindow):
         self._hdr_btn.clicked.connect(self._on_toggle_hdr)
         bl.addWidget(self._hdr_btn)
 
+        self._fps_btn = QPushButton(tr("Avg FPS"))
+        self._fps_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._fps_btn.setToolTip(tr("Measure FPS for 30 s via RivaTuner and show the average"))
+        self._fps_btn.clicked.connect(self._on_avg_fps)
+        bl.addWidget(self._fps_btn)
+
         self._misc_btn = QPushButton(tr("Misc  ▾"))
         self._misc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._misc_btn.clicked.connect(self._show_misc_menu)
@@ -4009,14 +4067,16 @@ class MainWindow(QMainWindow):
         self._fan_names[sensor_name] = new_name
         save_fan_names(self._fan_names)
 
-    def _make_cooling_tile(self, name: str, pct):
+    def _make_cooling_tile(self, name: str, pct, rpm=None):
+        """Cooling tile: name · big PWM % (amber ≥ 80 %, muted when stopped) ·
+        rpm line · 60-s rpm sparkline · a fill bar for the %."""
         tile = QFrame()
         tile.setObjectName("coolTile")
         tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        tile.setMinimumSize(120, 74)
+        tile.setMinimumSize(120, 92)
         v = QVBoxLayout(tile)
-        v.setContentsMargins(14, 12, 14, 12)
-        v.setSpacing(2)
+        v.setContentsMargins(14, 11, 14, 11)
+        v.setSpacing(3)
         head = QHBoxLayout()
         head.setSpacing(6)
         head.addWidget(IconLabel("fan", SUBTEXT, 13))
@@ -4024,21 +4084,68 @@ class MainWindow(QMainWindow):
         nl.setStyleSheet(f"color:{SUBTEXT}; font-size:9pt; font-weight:600;")
         nl.setWordWrap(True)
         head.addWidget(nl, 1)
-        pl = QLabel(f"{pct}%")
-        pl.setStyleSheet(f"color:{ACCENT}; font-size:22pt; font-weight:700;")
         v.addLayout(head)
         v.addStretch()
+        pl = QLabel()
+        pl.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(pl)
+        rl = QLabel()
+        rl.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
+        v.addWidget(rl)
+        spark = Sparkline(ACCENT)
+        spark.setFixedHeight(18)
+        v.addWidget(spark)
+        bar = QFrame()
+        bar.setFixedHeight(4)
+        bar.setStyleSheet(f"background:{BORDER}; border-radius:2px;")
+        fill = QFrame(bar)
+        fill.setFixedHeight(4)
+        fill.setGeometry(0, 0, 0, 4)
+        v.addWidget(bar)
+        tile._pl, tile._rl, tile._spark, tile._bar, tile._fill = pl, rl, spark, bar, fill
+        self._set_cooling_tile(tile, pct, rpm)
         return tile, pl
 
+    def _set_cooling_tile(self, tile, pct, rpm):
+        p = float(pct or 0)
+        tile._pct = p
+        stopped = p <= 0 and not rpm
+        col = SUBTEXT if stopped else AMBER if p >= 80 else ACCENT
+        tile._pl.setText(
+            f'<span style="color:{col}; font-size:22pt; font-weight:700;">{p:.0f}%</span>'
+            + (f' <span style="color:{SUBTEXT}; font-size:8pt;">{tr("stopped")}</span>' if stopped else "")
+        )
+        tile._rl.setText(f"{rpm:,} rpm" if rpm else ("—" if stopped else ""))
+        tile._spark.push(rpm if rpm is not None else 0)
+        tile._fill.setStyleSheet(f"background:{col}; border-radius:2px;")
+        tile._fill.setFixedWidth(int(tile._bar.width() * min(p, 100) / 100))
+
+    @staticmethod
+    def _best_cols(n: int, max_cols: int) -> int:
+        """Column count that leaves the smallest hole in the last row (prefer
+        more columns on ties): 6 fans at ≤4 cols → 3×2, 8 → 4×2, 5 → 3+2."""
+        max_cols = max(1, min(max_cols, n))
+        if max_cols <= 2:
+            return max_cols
+        best, best_gap = max_cols, None
+        for c in range(max_cols, 1, -1):                   # never collapse to a 1-column tower
+            gap = (-n) % c
+            if best_gap is None or gap < best_gap:
+                best, best_gap = c, gap
+            if gap == 0:
+                break
+        return best
+
     def _relayout_cooling(self):
-        """Re-flow the cooling tiles into as many columns as the card width allows,
-        with every cell stretching so the tiles grow to fill the space."""
+        """Re-flow the cooling tiles into a column count that fills the last
+        row (no dangling gap), every cell stretching to fill the card."""
         tiles = getattr(self, "_cooling_tiles", [])
         if not tiles:
             return
         w = self._cool_card.width() or 640
-        cols = max(1, min(len(tiles), (w - 24) // 160))
+        cols = self._best_cols(len(tiles), (w - 24) // 160)
+        for t in tiles:                                    # keep fill bars in sync with the new width
+            t._fill.setFixedWidth(int(t._bar.width() * min(getattr(t, "_pct", 0.0), 100) / 100))
         if cols == self._cool_cols:
             return
         self._cool_cols = cols
@@ -4074,16 +4181,20 @@ class MainWindow(QMainWindow):
                     item.widget().deleteLater()
             self._cooling_chips.clear()
             self._cooling_tiles = []
+            self._cooling_by_name = {}
             for f in shown:
                 display = self._fan_names.get(f["name"], f["name"])
-                tile, pct_lbl = self._make_cooling_tile(display, f["pct"])
+                tile, pct_lbl = self._make_cooling_tile(display, f["pct"], f.get("rpm"))
                 self._cooling_tiles.append(tile)
                 self._cooling_chips[f["name"]] = pct_lbl
+                self._cooling_by_name[f["name"]] = tile
             self._cool_cols = 0
             self._relayout_cooling()
         else:
             for f in shown:
-                self._cooling_chips[f["name"]].setText(f"{f['pct']}%")
+                tile = self._cooling_by_name.get(f["name"])
+                if tile is not None:
+                    self._set_cooling_tile(tile, f["pct"], f.get("rpm"))
 
     def _update_sensors(self, temps: tuple, ram: tuple, sensors: dict):
         (cpu_temp, cpu_load, _cpu_power,
@@ -4516,6 +4627,55 @@ class MainWindow(QMainWindow):
         else:
             main = "—"
         self._chip_ctrl.set_value(main, "<br>".join(lines))
+
+    # ── Avg FPS: sample RivaTuner's FPS for 30 s, then report avg / min / max ──
+    _FPS_SECONDS = 30
+
+    def _on_avg_fps(self):
+        if getattr(self, "_fps_samples", None) is not None:
+            return                                          # already measuring
+        fps, app = read_rtss_fps()
+        if fps is None:
+            QMessageBox.information(
+                self, tr("Avg FPS"),
+                tr("No FPS source found. RivaTuner Statistics Server must be running and a game rendering."))
+            return
+        self._fps_samples, self._fps_app, self._fps_left = [], app, self._FPS_SECONDS
+        self._fps_btn.setEnabled(False)
+        self._fps_timer = QTimer(self)
+        self._fps_timer.timeout.connect(self._fps_tick)
+        self._fps_timer.start(500)
+        self._fps_tick()
+
+    def _fps_tick(self):
+        fps, app = read_rtss_fps()
+        if fps is not None:
+            self._fps_samples.append(fps)
+            if app:
+                self._fps_app = app
+        elapsed = 0.5 * len(self._fps_samples) if self._fps_samples else 0
+        self._fps_left -= 0.5
+        self._fps_btn.setText(f"{tr('Avg FPS')} · {max(0, int(self._fps_left))} s")
+        if self._fps_left <= 0:
+            self._fps_timer.stop()
+            samples, app = self._fps_samples, self._fps_app
+            self._fps_samples = None
+            self._fps_btn.setEnabled(True)
+            self._fps_btn.setText(tr("Avg FPS"))
+            if not samples:
+                QMessageBox.information(self, tr("Avg FPS"), tr("No frames were measured."))
+                return
+            avg = sum(samples) / len(samples)
+            lo, hi = min(samples), max(samples)
+            s = sorted(samples)
+            p1 = s[max(0, int(len(s) * 0.01) - 1)] if len(s) >= 10 else lo
+            QMessageBox.information(
+                self, tr("Avg FPS"),
+                f"{app or ''}\n\n"
+                f"{tr('Average')}: {avg:.1f} FPS\n"
+                f"{tr('Min')}: {lo:.1f}   ·   {tr('Max')}: {hi:.1f}\n"
+                f"1 % low: {p1:.1f}\n"
+                f"({len(samples)} {tr('samples')} · {self._FPS_SECONDS} s)")
 
     def _on_set_language(self, code: str):
         """Misc → Language: persist the choice and restart so every label rebuilds."""
