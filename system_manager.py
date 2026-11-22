@@ -4069,11 +4069,12 @@ class MainWindow(QMainWindow):
 
     def _make_cooling_tile(self, name: str, pct, rpm=None):
         """Cooling tile: name · big PWM % (amber ≥ 80 %, muted when stopped) ·
-        rpm line · 60-s rpm sparkline · a fill bar for the %."""
+        rpm line · a fill bar for the %. (A per-fan sparkline was tried and
+        dropped — too busy at this size.)"""
         tile = QFrame()
         tile.setObjectName("coolTile")
         tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        tile.setMinimumSize(120, 92)
+        tile.setMinimumSize(120, 80)
         v = QVBoxLayout(tile)
         v.setContentsMargins(14, 11, 14, 11)
         v.setSpacing(3)
@@ -4092,9 +4093,6 @@ class MainWindow(QMainWindow):
         rl = QLabel()
         rl.setStyleSheet(f"color:{SUBTEXT}; font-size:8.5pt;")
         v.addWidget(rl)
-        spark = Sparkline(ACCENT)
-        spark.setFixedHeight(18)
-        v.addWidget(spark)
         bar = QFrame()
         bar.setFixedHeight(4)
         bar.setStyleSheet(f"background:{BORDER}; border-radius:2px;")
@@ -4102,7 +4100,7 @@ class MainWindow(QMainWindow):
         fill.setFixedHeight(4)
         fill.setGeometry(0, 0, 0, 4)
         v.addWidget(bar)
-        tile._pl, tile._rl, tile._spark, tile._bar, tile._fill = pl, rl, spark, bar, fill
+        tile._pl, tile._rl, tile._bar, tile._fill = pl, rl, bar, fill
         self._set_cooling_tile(tile, pct, rpm)
         return tile, pl
 
@@ -4116,7 +4114,6 @@ class MainWindow(QMainWindow):
             + (f' <span style="color:{SUBTEXT}; font-size:8pt;">{tr("stopped")}</span>' if stopped else "")
         )
         tile._rl.setText(f"{rpm:,} rpm" if rpm else ("—" if stopped else ""))
-        tile._spark.push(rpm if rpm is not None else 0)
         tile._fill.setStyleSheet(f"background:{col}; border-radius:2px;")
         tile._fill.setFixedWidth(int(tile._bar.width() * min(p, 100) / 100))
 
