@@ -4127,13 +4127,13 @@ class MainWindow(QMainWindow):
         max_cols = max(1, min(max_cols, n))
         if max_cols <= 2:
             return max_cols
-        best, best_gap = max_cols, None
+        # Score = empty cells in the last row, but giving up a column costs one
+        # cell too — so 10 fans prefer 4+4+2 over a 2-column tower of five rows.
+        best, best_score = max_cols, None
         for c in range(max_cols, 1, -1):                   # never collapse to a 1-column tower
-            gap = (-n) % c
-            if best_gap is None or gap < best_gap:
-                best, best_gap = c, gap
-            if gap == 0:
-                break
+            score = (-n) % c + (max_cols - c)
+            if best_score is None or score < best_score:
+                best, best_score = c, score
         return best
 
     def _relayout_cooling(self):
