@@ -3578,6 +3578,16 @@ class MainWindow(QMainWindow):
         self._cooling_layout.setSpacing(10)
         self._cool_cols = 0
         cool_card.installEventFilter(self)
+        # Scroll instead of clipping when the section is dragged smaller than
+        # the tiles' minimum height (tiles were getting their % cut off).
+        cool_scroll = QScrollArea()
+        cool_scroll.setWidgetResizable(True)
+        cool_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cool_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        cool_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        cool_scroll.viewport().setStyleSheet("background: transparent;")
+        cool_scroll.setWidget(cool_card)
+        cool_scroll.setMinimumHeight(140)
 
         disp_card = QFrame()
         disp_card.setObjectName("monitorCard")
@@ -3600,12 +3610,12 @@ class MainWindow(QMainWindow):
 
         ov_split = self._make_splitter(Qt.Orientation.Vertical, "ov_sections3")
         ov_split.addWidget(chips_holder)
-        ov_split.addWidget(_section(tr("Cooling"), cool_card, "fan"))
+        ov_split.addWidget(_section(tr("Cooling"), cool_scroll, "fan"))
         ov_split.addWidget(_section(tr("Displays"), disp_card, "mon"))
         ov_split.setStretchFactor(0, 0)
         ov_split.setStretchFactor(1, 1)
         ov_split.setStretchFactor(2, 0)
-        ov_split.setSizes([152, 450, 120])
+        ov_split.setSizes([152, 500, 110])
         ov_lay.addWidget(ov_split)
         ov_scroll.setWidget(ov_content)
 
@@ -4080,9 +4090,10 @@ class MainWindow(QMainWindow):
         tile = QFrame()
         tile.setObjectName("coolTile")
         tile.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        tile.setMinimumSize(120, 80)
+        # Real content height: header 15 + value 30 + rpm 14 + bar 4 + margins/spacing ≈ 100
+        tile.setMinimumSize(120, 112)
         v = QVBoxLayout(tile)
-        v.setContentsMargins(14, 11, 14, 11)
+        v.setContentsMargins(14, 10, 14, 10)
         v.setSpacing(3)
         head = QHBoxLayout()
         head.setSpacing(6)
@@ -4116,7 +4127,7 @@ class MainWindow(QMainWindow):
         stopped = p <= 0 and not rpm
         col = SUBTEXT if stopped else AMBER if p >= 80 else ACCENT
         tile._pl.setText(
-            f'<span style="color:{col}; font-size:22pt; font-weight:700;">{p:.0f}%</span>'
+            f'<span style="color:{col}; font-size:20pt; font-weight:700;">{p:.0f}%</span>'
             + (f' <span style="color:{SUBTEXT}; font-size:8pt;">{tr("stopped")}</span>' if stopped else "")
         )
         tile._rl.setText(f"{rpm:,} rpm" if rpm else ("—" if stopped else ""))
