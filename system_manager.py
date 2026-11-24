@@ -268,9 +268,15 @@ def get_temperatures():
         )
         data          = json.loads(result.stdout.strip())
         cpu           = data.get("cpu")
+        if cpu is not None and not (0 < float(cpu) < 130):
+            cpu = None
         cpu_load      = data.get("cpu_load")
         cpu_power     = data.get("cpu_power")
         gpu           = data.get("gpu")
+        # Sanity net: no die temperature is ever outside 0–130 °C; anything else is
+        # a mis-mapped sensor (a clock in MHz, a 255 sentinel) — show "—" instead.
+        if gpu is not None and not (0 < float(gpu) < 130):
+            gpu = None
         gpu_load      = data.get("gpu_load")
         gpu_power     = data.get("gpu_power")
         gpu_mem_used  = data.get("gpu_mem_used")

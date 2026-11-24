@@ -255,8 +255,13 @@ try
         var parts = line.Split(',');
         if (parts.Length >= 4)
         {
-            if (float.TryParse(parts[0].Trim(), out float smiTemp))
-                gpuTemp = smiTemp;   // authoritative on NVIDIA; overrides LHM's bad Blackwell read
+            // Authoritative on NVIDIA, but only when it looks like a temperature:
+            // a driver once returned a clock-like value (~3200) in this column.
+            if (float.TryParse(parts[0].Trim(), System.Globalization.NumberStyles.Float,
+                               System.Globalization.CultureInfo.InvariantCulture, out float smiTemp)
+                && smiTemp > 0 && smiTemp < 130)
+                gpuTemp = smiTemp;
+            debugHw.Add($"nvidia-smi: {line}");
             if (float.TryParse(parts[1].Trim(), out float smiLoad)
                 && (gpuLoad == null || gpuLoad == 0))
                 gpuLoad = smiLoad;
